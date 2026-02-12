@@ -33,23 +33,23 @@ def main():
     
 # ---- Initialize scenario (outside the FL loop) ----
     x_bs, y_bs, h_bs = 0.0, 0.0, 25.0          # BS location
-    h_min, h_max = 50.0, 200.0                # UAV altitude bounds
+    h_min, h_max = 50.0, 600.0                # UAV altitude bounds
     x_uav, y_uav = init_uav_positions(args.total_UE)
     h_uav = init_altitudes(args.total_UE, h_min, h_max)
     
     # Channel parameters (highrise urban example)
     # Channel parameters (DEBUG-FRIENDLY)
-    a, b = 9.61, 0.16          # highrise-urban (Al-Hourani)
+    a, b = 27.23, 0.08       # highrise-urban (Al-Hourani)
     fc = 2e9                  # 2 GHz
     alpha = 2.0               # pathloss exponent
     # Transmit power and noise (dBm)
-    P_tx_dbm = 20.0      # 100 mW UAV uplink
+    P_tx_dbm = 30.0      # 100 mW UAV uplink
     noise_dbm = -130.0  # thermal noise + NF
     
     # Path loss parameters
     alpha = 2.2
-    eta1_db = 1.0       # LoS excess loss
-    eta2_db = 20.0      # NLoS excess loss
+    eta1_db = 2.3      # LoS excess loss
+    eta2_db = 34.0      # NLoS excess loss
     fc = 2e9            # 2 GHz
     
     # ---- FL learning loop ----
@@ -64,7 +64,8 @@ def main():
         P_LoS = plos(theta, a, b)
         PL_db = avg_pathloss_db(d, P_LoS, fc, alpha, eta1_db, eta2_db)
         snr_db = snr_from_pathloss_db(P_tx_dbm, PL_db, noise_dbm)
-        p_succ = (snr_db >= 15.0).astype(float)   # threshold in dB
+        p_succ = (snr_db >= 20.0).astype(float)   # threshold in dB
+        
         # ---- DEBUG (put it HERE) ----
         print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
         print("UAV | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")

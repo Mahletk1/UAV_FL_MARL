@@ -1,6 +1,6 @@
 import numpy as np
 
-def init_uav_positions(N, area_size=1000):
+def init_uav_positions(N, area_size=500):
     # fixed horizontal positions
     x = np.random.uniform(-area_size/2, area_size/2, N)
     y = np.random.uniform(-area_size/2, area_size/2, N)
