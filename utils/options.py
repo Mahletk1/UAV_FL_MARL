@@ -3,9 +3,9 @@ import argparse
 def args_parser():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument('--round', type=int, default=10)
-    parser.add_argument('--total_UE', type=int, default=10)
-    parser.add_argument('--active_UE', type=int, default=5)
+    parser.add_argument('--round', type=int, default=100)
+    parser.add_argument('--total_UE', type=int, default=100)
+    parser.add_argument('--active_UE', type=int, default=10)
     parser.add_argument('--local_ep', type=int, default=2)
     parser.add_argument('--local_bs', type=int, default=64)
     parser.add_argument('--bs', type=int, default=256)
@@ -21,6 +21,22 @@ def args_parser():
     parser.add_argument('--optimizer', type=str, default='fedavg')
     
     parser.add_argument('--mode', type=str, default='random_selection', choices=['ideal', 'random_selection'])
+
+
+    # Experiment switches
+    parser.add_argument('--method', type=str, default='random',
+                        choices=['random', 'greedy_channel', 'marl'],
+                        help='Client selection method')
+    
+    parser.add_argument('--altitude_mode', type=str, default='fixed',
+                        choices=['fixed', 'random', 'marl'],
+                        help='How UAV altitudes are set')
+    
+    parser.add_argument('--wireless_on', action='store_true',
+                        help='Enable wireless success/failure model')
+    
+    parser.add_argument('--snr_th', type=float, default=5.0,
+                    help='SNR threshold for successful upload')
 
 
     args = parser.parse_args()

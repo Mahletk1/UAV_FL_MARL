@@ -2,8 +2,9 @@ from utils.options import args_parser
 from utils.sampling_func import DataPartitioner
 from models.Update import LocalUpdate
 from models.Fed import FedAvg
-from models.Nets import CNNMnist
+from models.Nets import CNNMnist,CNN60K
 from models.evaluation import test_model
+# from selections.selectors import RandomSelector, GreedyChannelSelector, MARLSelector
 
 import copy
 import torch
@@ -20,28 +21,29 @@ def main():
     args = args_parser()
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() else 'cpu')
 
-    # trans = transforms.Compose([transforms.ToTensor()])
-    # dataset_train = datasets.MNIST('./data/mnist/', train=True, download=True, transform=trans)
-    # dataset_test = datasets.MNIST('./data/mnist/', train=False, download=True, transform=trans)
+    trans = transforms.Compose([transforms.ToTensor()])
+    dataset_train = datasets.MNIST('./data/mnist/', train=True, download=True, transform=trans)
+    dataset_test = datasets.MNIST('./data/mnist/', train=False, download=True, transform=trans)
 
-    trans = transforms.Compose([
-    transforms.RandomCrop(32, padding=4),
-    transforms.RandomHorizontalFlip(),
-    transforms.ToTensor(),
-    ])
+    # trans = transforms.Compose([
+    # transforms.RandomCrop(32, padding=4),
+    # transforms.RandomHorizontalFlip(),
+    # transforms.ToTensor(),
+    # ])
     
-    dataset_train = datasets.CIFAR10('./data/cifar10/', train=True, download=True, transform=trans)
-    dataset_test = datasets.CIFAR10('./data/cifar10/', train=False, download=True, transform=trans)
+    # dataset_train = datasets.CIFAR10('./data/cifar10/', train=True, download=True, transform=trans)
+    # dataset_test = datasets.CIFAR10('./data/cifar10/', train=False, download=True, transform=trans)
     
-    args.num_channels = 3
-    args.num_classes = 10
+    # args.num_channels = 3
+    # args.num_classes = 10
 
 
     partition_obj = DataPartitioner(dataset_train, args.total_UE, NonIID=args.iid, alpha=args.alpha)
     dict_users, _ = partition_obj.use() #Each client gets indices of MNIST samples.
 
-    # net_glob = CNNMnist(args=args).to(args.device)
-    net_glob = ResNetCifar(num_classes=10).to(args.device)
+    net_glob = CNNMnist(args=args).to(args.device)
+    # net_glob = ResNetCifar(num_classes=10).to(args.device)
+    # net_glob = CNN60K(args=args).to(args.device)
     net_glob.train()
 
     acc_list = []
