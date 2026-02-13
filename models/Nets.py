@@ -3,6 +3,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+from torchvision.models import resnet18
 
 class CNNMnist(nn.Module):
     def __init__(self, args):
@@ -21,3 +22,14 @@ class CNNMnist(nn.Module):
         x = F.dropout(x, training=self.training)
         x = self.fc2(x)
         return x
+
+class ResNetCifar(nn.Module):
+    def __init__(self, num_classes=10):
+        super().__init__()
+        self.model = resnet18(num_classes=num_classes)
+        # Adjust first conv layer for CIFAR (32x32 instead of ImageNet 224x224)
+        self.model.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.model.maxpool = nn.Identity()
+
+    def forward(self, x):
+        return self.model(x)

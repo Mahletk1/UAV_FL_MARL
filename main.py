@@ -13,19 +13,35 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 from UE_Selection.UAV_scenario import init_uav_positions, init_altitudes, update_altitudes
 from UE_Selection.atg_channel import elevation_angle, plos, snr_from_pathloss_db, avg_pathloss_db
+from models.Nets import ResNetCifar
+
 
 def main():
     args = args_parser()
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() else 'cpu')
 
-    trans = transforms.Compose([transforms.ToTensor()])
-    dataset_train = datasets.MNIST('./data/mnist/', train=True, download=True, transform=trans)
-    dataset_test = datasets.MNIST('./data/mnist/', train=False, download=True, transform=trans)
+    # trans = transforms.Compose([transforms.ToTensor()])
+    # dataset_train = datasets.MNIST('./data/mnist/', train=True, download=True, transform=trans)
+    # dataset_test = datasets.MNIST('./data/mnist/', train=False, download=True, transform=trans)
+
+    trans = transforms.Compose([
+    transforms.RandomCrop(32, padding=4),
+    transforms.RandomHorizontalFlip(),
+    transforms.ToTensor(),
+    ])
+    
+    dataset_train = datasets.CIFAR10('./data/cifar10/', train=True, download=True, transform=trans)
+    dataset_test = datasets.CIFAR10('./data/cifar10/', train=False, download=True, transform=trans)
+    
+    args.num_channels = 3
+    args.num_classes = 10
+
 
     partition_obj = DataPartitioner(dataset_train, args.total_UE, NonIID=args.iid, alpha=args.alpha)
     dict_users, _ = partition_obj.use() #Each client gets indices of MNIST samples.
 
-    net_glob = CNNMnist(args=args).to(args.device)
+    # net_glob = CNNMnist(args=args).to(args.device)
+    net_glob = ResNetCifar(num_classes=10).to(args.device)
     net_glob.train()
 
     acc_list = []
@@ -38,7 +54,6 @@ def main():
     
     
     # Channel parameters (highrise urban example)
-    # Channel parameters (DEBUG-FRIENDLY)
     a, b = 27.23, 0.08       # highrise-urban (Al-Hourani)
     fc = 2e9                  # 2 GHz
     # alpha = 2.0               # pathloss exponent
@@ -68,19 +83,19 @@ def main():
         p_succ = (snr_db >= 20.0).astype(float)   # threshold in dB
         print(p_succ)
         # ---- DEBUG (put it HERE) ----
-        print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
-        print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
-        print("-" * 95)
+        # print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
+        # print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
+        # print("-" * 95)
         
-        for i in range(args.total_UE):
-            print(f"{i:3d} | "
-                      f"{x_uav[i]:8.2f} | "
-                      f"{y_uav[i]:8.2f} | "
-                      f"{h_uav[i]:10.2f} | "
-                      f"{theta[i]:15.2f} | "
-                      f"{P_LoS[i]:7.3f} | "
-                      f"{PL_db[i]:12.2f} | "
-                      f"{snr_db[i]:9.2f}")
+        # for i in range(args.total_UE):
+        #     print(f"{i:3d} | "
+        #               f"{x_uav[i]:8.2f} | "
+        #               f"{y_uav[i]:8.2f} | "
+        #               f"{h_uav[i]:10.2f} | "
+        #               f"{theta[i]:15.2f} | "
+        #               f"{P_LoS[i]:7.3f} | "
+        #               f"{PL_db[i]:12.2f} | "
+        #               f"{snr_db[i]:9.2f}")
       
      
     
