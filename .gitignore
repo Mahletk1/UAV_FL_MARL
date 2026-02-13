@@ -1,0 +1,26 @@
+# Datasets / data folders
+data/
+datasets/
+./data/
+./datasets/
+
+# Common ML artifacts
+*.pt
+*.pth
+*.ckpt
+*.h5
+
+# Large archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Python cache
+__pycache__/
+*.pyc
+
+
+# OS files
+.DS_Store
+Thumbs.db
