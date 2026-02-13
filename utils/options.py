@@ -12,8 +12,8 @@ def args_parser():
     parser.add_argument('--lr', type=float, default=0.01)
     parser.add_argument('--momentum', type=float, default=0.0)
 
-    parser.add_argument('--dataset', type=str, default='mnist')
-    parser.add_argument('--iid', type=str, default='dirichlet')
+    # parser.add_argument('--dataset', type=str, default='mnist')
+    parser.add_argument('--iid', type=str, default='dirichlet') #dirichlet,iid
     parser.add_argument('--alpha', type=float, default=0.3)
     parser.add_argument('--num_classes', type=int, default=10)
     parser.add_argument('--num_channels', type=int, default=1)  
@@ -32,11 +32,25 @@ def args_parser():
                         choices=['fixed', 'random', 'marl'],
                         help='How UAV altitudes are set')
     
-    parser.add_argument('--wireless_on', action='store_true',
-                        help='Enable wireless success/failure model')
+    parser.add_argument('--wireless_on', action='store_true', default=True,
+                    help='Enable wireless success/failure model')
+
     
-    parser.add_argument('--snr_th', type=float, default=5.0,
+    parser.add_argument('--snr_th', type=float, default=20.0,
                     help='SNR threshold for successful upload')
+ # Dataset and models
+    parser.add_argument('--dataset', type=str, default='mnist',
+                    choices=['mnist', 'cifar10'],
+                    help='Dataset to use')
+
+    parser.add_argument('--model', type=str, default='cnn60k',
+                    choices=['cnn', 'resnet', 'cnn60k'],
+                    help='Model architecture')
+ # Different Environments 
+ 
+    parser.add_argument('--env', type=str, default='urban',
+                    choices=['suburban', 'urban','denseurban', 'highrise'],
+                    help='Propagation environment type')
 
 
     args = parser.parse_args()
