@@ -4,7 +4,7 @@ def args_parser():
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--round', type=int, default=100)
-    parser.add_argument('--total_UE', type=int, default=100)
+    parser.add_argument('--total_UE', type=int, default=20)
     parser.add_argument('--active_UE', type=int, default=10)
     parser.add_argument('--local_ep', type=int, default=2)
     parser.add_argument('--local_bs', type=int, default=64)
@@ -36,7 +36,7 @@ def args_parser():
                     help='Enable wireless success/failure model')
 
     
-    parser.add_argument('--snr_th', type=float, default=20.0,
+    parser.add_argument('--snr_th', type=float, default=15.0,
                     help='SNR threshold for successful upload')
  # Dataset and models
     parser.add_argument('--dataset', type=str, default='mnist',
@@ -48,7 +48,7 @@ def args_parser():
                     help='Model architecture')
  # Different Environments 
  
-    parser.add_argument('--env', type=str, default='urban',
+    parser.add_argument('--env', type=str, default='highrise',
                     choices=['suburban', 'urban','denseurban', 'highrise'],
                     help='Propagation environment type')
 

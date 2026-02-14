@@ -11,10 +11,34 @@ import torch
 import numpy as np
 from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
-from UE_Selection.UAV_scenario import init_uav_positions, init_altitudes #update_altitudes
+from UE_Selection.UAV_scenario import init_circular_xy_trajectory,init_predefined_height_trajectory,  init_altitudes #update_altitudes
 from UE_Selection.atg_channel import elevation_angle, plos, snr_from_pathloss_db, avg_pathloss_db
 from models.Nets import ResNetCifar
 import os
+import matplotlib.pyplot as plt
+
+def plot_uav_xy(x_uav, y_uav, x_bs=0.0, y_bs=0.0, round_id=None):
+    plt.figure(figsize=(6,6))
+    plt.scatter(x_uav, y_uav, c='blue', label='UAVs')
+    plt.scatter([x_bs], [y_bs], c='red', marker='^', s=120, label='BS')
+
+    for i in range(len(x_uav)):
+        plt.text(x_uav[i]+3, y_uav[i]+3, str(i), fontsize=8)
+
+    plt.axhline(0, color='gray', lw=0.5)
+    plt.axvline(0, color='gray', lw=0.5)
+    plt.gca().set_aspect('equal', adjustable='box')
+    plt.xlabel("x (m)")
+    plt.ylabel("y (m)")
+    title = "UAV Positions (Top-Down View)"
+    if round_id is not None:
+        title += f" – Round {round_id}"
+    plt.title(title)
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    plt.show()
+
 
 ENV_PARAMS = {
 
@@ -85,9 +109,28 @@ def main():
         'num_success': []
     }
 # ---- Initialize scenario (outside the FL loop) ----
-    x_bs, y_bs, h_bs = 0.0, 0.0, 25.0          # BS location
-    h_min, h_max = 50.0, 600.0                # UAV altitude bounds
+    x_bs, y_bs, h_bs = 0.0, 0.0, 20.0          # BS location
+    h_min, h_max = 80, 500                # UAV altitude bounds
+   
+
+# ---- Predefined UAV trajectories (x, y, z) ----
+    traj_x, traj_y = init_circular_xy_trajectory(
+        N=args.total_UE,
+        T=args.round,
+        R_mean=200.0,
+        R_jitter=60.0,
+        seed=42
+)
     
+    
+    traj_h_base = init_predefined_height_trajectory(
+        N=args.total_UE,
+        T=args.round,
+        h_min=h_min,
+        h_max=h_max,
+        seed=args.seed if hasattr(args, 'seed') else 0
+    )
+
     
     
     # Channel parameters (highrise urban example)
@@ -117,11 +160,15 @@ def main():
         
     # ---- FL learning loop ----
     for r in range(args.round):
-        x_uav, y_uav = init_uav_positions(args.total_UE)
-        h_uav = init_altitudes(args.total_UE, h_min, h_max)
-        # (Optional for now) random altitude change to simulate mobility
-        # actions = np.random.uniform(-5, 5, size=args.total_UE)
-        # h_uav = update_altitudes(h_uav, actions, h_min, h_max)
+        x_uav = traj_x[r]
+        y_uav = traj_y[r]
+        
+        if args.method == 'marl':
+            # placeholder for now – later MARL modifies traj_h_base
+            h_uav = traj_h_base[r]
+        else:
+            h_uav = traj_h_base[r]
+
     
         # 1) Update ATG channel
         theta, d = elevation_angle(x_bs, y_bs, h_bs, x_uav, y_uav, h_uav)
@@ -147,7 +194,8 @@ def main():
         #               f"{PL_db[i]:12.2f} | "
         #               f"{snr_db[i]:9.2f}")
       
-     
+        # This is to plot the positions of the UAVs
+        # plot_uav_xy(x_uav, y_uav, x_bs, y_bs, round_id=r)
         # Client selection
         idxs_users = selector.select(PL_db, args.active_UE)
         successful_users = [idx for idx in idxs_users if p_succ[idx] > 0.0]
