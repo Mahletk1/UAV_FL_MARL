@@ -17,6 +17,32 @@ from models.Nets import ResNetCifar
 import os
 import matplotlib.pyplot as plt
 
+from marl.train.train_mappo_phase1 import Actor
+from marl.utils.features import normalize_angle_deg, normalize_db, normalize_pos
+
+def build_obs_main(x_uav, y_uav, h_uav, d, theta, P_LoS, PL_db, snr_db, prev_success,
+                   h_min, h_max, use_agent_id=True):
+    x = normalize_pos(x_uav, scale=500.0)
+    y = normalize_pos(y_uav, scale=500.0)
+    h = (h_uav - h_min) / (h_max - h_min + 1e-8)
+    d_n = np.clip(d / 2000.0, 0.0, 1.0)
+    th = normalize_angle_deg(theta)
+    plos = np.clip(P_LoS, 0.0, 1.0)
+    pl_db_n = normalize_db(PL_db, lo=60.0, hi=160.0)
+    snr_db_n = normalize_db(snr_db, lo=-20.0, hi=40.0)
+    prev = np.clip(prev_success, 0.0, 1.0)
+
+    obs = np.stack([x, y, h, d_n, th, plos, pl_db_n, snr_db_n, prev], axis=1).astype(np.float32)
+
+    if use_agent_id:
+        N = obs.shape[0]
+        agent_id = (np.arange(N, dtype=np.float32) / max(1, N - 1)).reshape(-1, 1)
+        obs = np.concatenate([obs, agent_id], axis=1).astype(np.float32)
+
+    return obs
+
+
+
 def plot_uav_xy(x_uav, y_uav, x_bs=0.0, y_bs=0.0, round_id=None):
     plt.figure(figsize=(6,6))
     plt.scatter(x_uav, y_uav, c='blue', label='UAVs')
@@ -63,6 +89,15 @@ ENV_PARAMS = {
 def main():
     args = args_parser()
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() else 'cpu')
+    args.use_agent_id = True
+
+    actor = None
+    if args.policy == "mappo":
+        obs_dim = 10
+        actor = Actor(obs_dim=obs_dim, act_dim=1)
+        actor.load_state_dict(torch.load("marl/checkpoints/actor_phase1.pt",map_location=args.device,weights_only=True))
+        actor.to(args.device)
+        actor.eval()
 
     if args.dataset == 'mnist':
         trans = transforms.Compose([transforms.ToTensor()])
@@ -111,7 +146,9 @@ def main():
 # ---- Initialize scenario (outside the FL loop) ----
     x_bs, y_bs, h_bs = 0.0, 0.0, 20.0          # BS location
     h_min, h_max = 80, 500                # UAV altitude bounds
-   
+    args.h_min = h_min
+    args.h_max = h_max
+
 
 # ---- Predefined UAV trajectories (x, y, z) ----
     traj_x, traj_y = init_circular_xy_trajectory(
@@ -158,48 +195,83 @@ def main():
     else:
         raise ValueError("Unknown selection method")
         
+    prev_success = np.zeros(args.total_UE, dtype=np.float32)
+
+    # initialize altitude for round 0
+    h_uav = traj_h_base[0].copy()
+
     # ---- FL learning loop ----
     for r in range(args.round):
         x_uav = traj_x[r]
         y_uav = traj_y[r]
-        
-        if args.method == 'marl':
-            # placeholder for now – later MARL modifies traj_h_base
-            h_uav = traj_h_base[r]
-        else:
-            h_uav = traj_h_base[r]
-
     
-        # 1) Update ATG channel
+        # If fixed policy, override altitude for this round
+        if args.policy == "fixed":
+            h_uav = traj_h_base[r].copy()
+    
+        # 1) Compute channel using current h_uav (needed to build obs for MAPPO)
         theta, d = elevation_angle(x_bs, y_bs, h_bs, x_uav, y_uav, h_uav)
         P_LoS = plos(theta, a, b)
         PL_db = avg_pathloss_db(d, P_LoS, fc, eta1_db, eta2_db)
         snr_db = snr_from_pathloss_db(P_tx_dbm, PL_db, noise_dbm)
+    
+        # 2) Apply altitude control (random or MAPPO) AFTER we have channel features
+        if args.policy == "random":
+            dh = np.random.uniform(-1, 1, size=args.total_UE) * 10.0
+            h_uav = np.clip(h_uav + dh, args.h_min, args.h_max)
+    
+        elif args.policy == "mappo":
+            obs = build_obs_main(
+                x_uav, y_uav, h_uav, d, theta, P_LoS, PL_db, snr_db,
+                prev_success, args.h_min, args.h_max,
+                use_agent_id=args.use_agent_id
+            )
+
+            obs_t = torch.tensor(obs, dtype=torch.float32, device=args.device)
+    
+            with torch.no_grad():
+                mu, _ = actor(obs_t)  # [-1,1]
+                dh = mu.detach().cpu().numpy().reshape(-1) * 10.0
+    
+            h_uav = np.clip(h_uav + dh, args.h_min, args.h_max)
+    
+            # 3) Recompute channel AFTER MAPPO changed altitude (this is what matters for comm/FL)
+            theta, d = elevation_angle(x_bs, y_bs, h_bs, x_uav, y_uav, h_uav)
+            P_LoS = plos(theta, a, b)
+            PL_db = avg_pathloss_db(d, P_LoS, fc, eta1_db, eta2_db)
+            snr_db = snr_from_pathloss_db(P_tx_dbm, PL_db, noise_dbm)
+    
+        # 4) Now compute success probability based on the FINAL snr_db
         if args.wireless_on:
             p_succ = (snr_db >= args.snr_th).astype(float)
         else:
             p_succ = np.ones_like(snr_db)
+
         # ---- DEBUG (put it HERE) ----
-        # print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
-        # print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
-        # print("-" * 95)
+        print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
+        print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
+        print("-" * 95)
         
-        # for i in range(args.total_UE):
-        #     print(f"{i:3d} | "
-        #               f"{x_uav[i]:8.2f} | "
-        #               f"{y_uav[i]:8.2f} | "
-        #               f"{h_uav[i]:10.2f} | "
-        #               f"{theta[i]:15.2f} | "
-        #               f"{P_LoS[i]:7.3f} | "
-        #               f"{PL_db[i]:12.2f} | "
-        #               f"{snr_db[i]:9.2f}")
+        for i in range(args.total_UE):
+            print(f"{i:3d} | "
+                      f"{x_uav[i]:8.2f} | "
+                      f"{y_uav[i]:8.2f} | "
+                      f"{h_uav[i]:10.2f} | "
+                      f"{theta[i]:15.2f} | "
+                      f"{P_LoS[i]:7.3f} | "
+                      f"{PL_db[i]:12.2f} | "
+                      f"{snr_db[i]:9.2f}")
       
         # This is to plot the positions of the UAVs
         # plot_uav_xy(x_uav, y_uav, x_bs, y_bs, round_id=r)
         # Client selection
         idxs_users = selector.select(PL_db, args.active_UE)
         successful_users = [idx for idx in idxs_users if p_succ[idx] > 0.0]
+        prev_success = np.zeros(args.total_UE, dtype=np.float32)
         
+        for idx in successful_users:
+            prev_success[idx] = 1.0
+
         # Local training
         w_locals = []
         for idx in successful_users:

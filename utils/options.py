@@ -52,6 +52,11 @@ def args_parser():
                     choices=['suburban', 'urban','denseurban', 'highrise'],
                     help='Propagation environment type')
 
+# in utils/options.py or argparse in main.py
+    parser.add_argument('--policy', type=str, default='mappo',
+                    choices=['fixed', 'random', 'mappo'],
+                    help='UAV altitude control policy')
+
 
     args = parser.parse_args()
     return args
