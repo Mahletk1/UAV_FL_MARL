@@ -12,9 +12,8 @@ class RandomSelector(BaseSelector):
 
 class GreedyChannelSelector(BaseSelector):
     def select(self, channel_metric, K):
-        # lower PL = better channel
-        scores = 1.0 / (channel_metric + 1e-9)
-        return np.argsort(scores)[-K:]
+        # now channel_metric is SNR (higher is better)
+        return np.argsort(channel_metric)[-K:]
 
 # Placeholder for future MARL
 class MARLSelector(BaseSelector):

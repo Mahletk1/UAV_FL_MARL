@@ -11,11 +11,13 @@ import torch
 import numpy as np
 from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
-from UE_Selection.UAV_scenario import init_circular_xy_trajectory,init_predefined_height_trajectory,  init_altitudes #update_altitudes
+from UE_Selection.UAV_scenario import init_circular_xy_trajectory,init_random_xy_trajectory,init_predefined_height_trajectory,init_random_walk_xy_trajectory,  init_altitudes #update_altitudes
 from UE_Selection.atg_channel import elevation_angle, plos, snr_from_pathloss_db, avg_pathloss_db
 from models.Nets import ResNetCifar
 import os
 import matplotlib.pyplot as plt
+import random
+from mappo_agent import MAPPOAgent
 
 def plot_uav_xy(x_uav, y_uav, x_bs=0.0, y_bs=0.0, round_id=None):
     plt.figure(figsize=(6,6))
@@ -62,6 +64,13 @@ ENV_PARAMS = {
  
 def main():
     args = args_parser()
+   
+    np.random.seed(args.seed)
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
+
     args.device = torch.device('cuda:{}'.format(args.gpu) if torch.cuda.is_available() else 'cpu')
 
     if args.dataset == 'mnist':
@@ -87,6 +96,9 @@ def main():
 
     partition_obj = DataPartitioner(dataset_train, args.total_UE, NonIID=args.iid, alpha=args.alpha)
     dict_users, _ = partition_obj.use() #Each client gets indices of MNIST samples.
+    
+    sizes = np.array([len(dict_users[i]) for i in range(args.total_UE)], dtype=np.float32)
+    data_ratio = sizes / (sizes.sum() + 1e-8)
 
     if args.model == 'cnn':
         net_glob = CNNMnist(args=args).to(args.device)
@@ -106,31 +118,57 @@ def main():
         'test_loss': [],
         'avg_pl_selected': [],
         'num_selected': [],
-        'num_success': []
+        'num_success': [],
+    
+        # fairness masks
+        'selected_mask': [],
+        'success_mask': [],
+    
+        # trajectories (for visualization)
+        'x_uav': [],
+        'y_uav': [],
+        'h_uav': []
     }
 # ---- Initialize scenario (outside the FL loop) ----
     x_bs, y_bs, h_bs = 0.0, 0.0, 20.0          # BS location
-    h_min, h_max = 80, 500                # UAV altitude bounds
+    h_min, h_max = args.h_min, args.h_max              # UAV altitude bounds
    
 
 # ---- Predefined UAV trajectories (x, y, z) ----
-    traj_x, traj_y = init_circular_xy_trajectory(
-        N=args.total_UE,
-        T=args.round,
-        R_mean=200.0,
-        R_jitter=60.0,
-        seed=42
-)
-    
-    
-    traj_h_base = init_predefined_height_trajectory(
-        N=args.total_UE,
-        T=args.round,
-        h_min=h_min,
-        h_max=h_max,
-        seed=args.seed if hasattr(args, 'seed') else 0
-    )
+#     traj_x, traj_y = init_circular_xy_trajectory(
+#         N=args.total_UE,
+#         T=args.round,
+#         R_mean=200.0,
+#         R_jitter=60.0,
+#         seed=args.seed
+# )
 
+
+    # traj_x, traj_y = init_random_xy_trajectory(
+    #     N=args.total_UE,
+    #     T=args.round,
+    #     area_size=500.0,
+    #     seed=args.seed
+    # )
+    
+    traj_x, traj_y = init_random_walk_xy_trajectory(
+        N=args.total_UE,
+        T=args.round,
+        area_size=500.0,
+        step_std=20.0,
+        seed=args.seed
+    )
+    
+    # traj_h_base = init_predefined_height_trajectory(
+    #     N=args.total_UE,
+    #     T=args.round,
+    #     h_min=h_min,
+    #     h_max=h_max,
+    #     seed=args.seed if hasattr(args, 'seed') else 0
+    # )
+    h_const = 0.3 * (args.h_min + args.h_max)   # mid-altitude baseline
+
+    traj_h_base = np.ones((args.round, args.total_UE), dtype=np.float32) * h_const
     
     
     # Channel parameters (highrise urban example)
@@ -154,52 +192,113 @@ def main():
     elif args.method == 'greedy_channel':
         selector = GreedyChannelSelector()
     elif args.method == 'marl':
-        selector = MARLSelector(marl_agent=None)
+        obs_dim = 6
+        state_dim = args.total_UE * obs_dim
+        marl_agent = MAPPOAgent(args, obs_dim=obs_dim, state_dim=state_dim, device=args.device)
+        marl_agent.load(args.marl_policy_path)
+    
+        # stateful altitude
+        h = init_altitudes(args.total_UE, h_min, h_max).astype(np.float32)
+        last_selected = np.zeros(args.total_UE, dtype=np.float32)
     else:
         raise ValueError("Unknown selection method")
-        
+       
+
+    
     # ---- FL learning loop ----
     for r in range(args.round):
         x_uav = traj_x[r]
         y_uav = traj_y[r]
         
-        if args.method == 'marl':
-            # placeholder for now – later MARL modifies traj_h_base
-            h_uav = traj_h_base[r]
+        # ---------- altitude for this round ----------
+        if args.method == "marl":
+            h_uav = h
         else:
             h_uav = traj_h_base[r]
-
-    
-        # 1) Update ATG channel
+        
+        # ---------- A2G compute (using current altitude) ----------
         theta, d = elevation_angle(x_bs, y_bs, h_bs, x_uav, y_uav, h_uav)
         P_LoS = plos(theta, a, b)
         PL_db = avg_pathloss_db(d, P_LoS, fc, eta1_db, eta2_db)
         snr_db = snr_from_pathloss_db(P_tx_dbm, PL_db, noise_dbm)
+        
+        # ---------- MARL action: update altitude + compute scores ----------
+        if args.method == "marl":
+            # Build obs from current round channel stats
+            h_norm = (h_uav - h_min) / (h_max - h_min + 1e-8)
+            d_norm = d / (np.max(d) + 1e-8)
+            theta_norm = theta / 90.0
+            snr_norm = np.clip((snr_db + 20.0) / 60.0, 0.0, 1.0)
+        
+            obs_n = np.stack(
+                [h_norm, d_norm, theta_norm, snr_norm, last_selected, data_ratio],
+                axis=1
+            ).astype(np.float32)
+            state = obs_n.reshape(-1).astype(np.float32)
+        
+            # Policy inference
+            dh, scores, _ = marl_agent.act_deterministic(obs_n, state)
+        
+            # Apply altitude update
+            dh = np.clip(dh, -args.delta_h_max, args.delta_h_max).astype(np.float32)
+            h = np.clip(h + dh, h_min, h_max).astype(np.float32)
+        
+            # Recompute channel after altitude update (important!)
+            h_uav = h
+            theta, d = elevation_angle(x_bs, y_bs, h_bs, x_uav, y_uav, h_uav)
+            P_LoS = plos(theta, a, b)
+            PL_db = avg_pathloss_db(d, P_LoS, fc, eta1_db, eta2_db)
+            snr_db = snr_from_pathloss_db(P_tx_dbm, PL_db, noise_dbm)
+        
+            # Select Top-K by score
+            idxs_users = np.argsort(scores)[-args.active_UE:]
+        
+            # Update last_selected
+            last_selected[:] = 0.0
+            last_selected[idxs_users] = 1.0
+        
+        else:
+            # ---------- baselines selection ----------
+            idxs_users = selector.select(snr_db, args.active_UE)
+        
+        # ---------- wireless success ----------
         if args.wireless_on:
             p_succ = (snr_db >= args.snr_th).astype(float)
         else:
             p_succ = np.ones_like(snr_db)
-        # ---- DEBUG (put it HERE) ----
-        # print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
-        # print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
-        # print("-" * 95)
-        
-        # for i in range(args.total_UE):
-        #     print(f"{i:3d} | "
-        #               f"{x_uav[i]:8.2f} | "
-        #               f"{y_uav[i]:8.2f} | "
-        #               f"{h_uav[i]:10.2f} | "
-        #               f"{theta[i]:15.2f} | "
-        #               f"{P_LoS[i]:7.3f} | "
-        #               f"{PL_db[i]:12.2f} | "
-        #               f"{snr_db[i]:9.2f}")
-      
-        # This is to plot the positions of the UAVs
+         # ---- DEBUG (put it HERE) ----
+        print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
+        print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
+        print("-" * 95)
+         
+        for i in range(args.total_UE):
+             print(f"{i:3d} | "
+                       f"{x_uav[i]:8.2f} | "
+                       f"{y_uav[i]:8.2f} | "
+                       f"{h_uav[i]:10.2f} | "
+                       f"{theta[i]:15.2f} | "
+                       f"{P_LoS[i]:7.3f} | "
+                       f"{PL_db[i]:12.2f} | "
+                       f"{snr_db[i]:9.2f}")
+       
+         # This is to plot the positions of the UAVs
         # plot_uav_xy(x_uav, y_uav, x_bs, y_bs, round_id=r)
-        # Client selection
-        idxs_users = selector.select(PL_db, args.active_UE)
         successful_users = [idx for idx in idxs_users if p_succ[idx] > 0.0]
+       
         
+       # ---- NEW: save per-round trajectory + selection masks ----
+        sel = np.zeros(args.total_UE, dtype=np.float32)
+        sel[idxs_users] = 1.0
+        
+        succ = np.zeros(args.total_UE, dtype=np.float32)
+        succ[successful_users] = 1.0
+        
+        log['x_uav'].append(np.array(x_uav, dtype=np.float32))
+        log['y_uav'].append(np.array(y_uav, dtype=np.float32))
+        log['h_uav'].append(np.array(h_uav, dtype=np.float32))
+        log['selected_mask'].append(sel)
+        log['success_mask'].append(succ)
+
         # Local training
         w_locals = []
         for idx in successful_users:
@@ -215,8 +314,6 @@ def main():
          
         # Evaluation
         acc, loss = test_model(net_glob, dataset_test, args)
-
-        # Logging
         log['round'].append(r)
         log['test_acc'].append(acc)
         log['test_loss'].append(loss)
@@ -236,6 +333,13 @@ def main():
     env_tag = args.env
     save_name = f"results/{args.method}_{data_mode}_{env_tag}_wireless{args.wireless_on}.npy"
     
+    # ---- NEW: convert list->array so plots are easy ----
+    log['x_uav'] = np.stack(log['x_uav'], axis=0)             # [T, N]
+    log['y_uav'] = np.stack(log['y_uav'], axis=0)             # [T, N]
+    log['h_uav'] = np.stack(log['h_uav'], axis=0)             # [T, N]
+    log['selected_mask'] = np.stack(log['selected_mask'], 0)  # [T, N]
+    log['success_mask'] = np.stack(log['success_mask'], 0)    # [T, N]
+
     np.save(save_name, log)
     print(f"[Saved logs to {save_name}]")
 
