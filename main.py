@@ -155,20 +155,20 @@ def main():
         N=args.total_UE,
         T=args.round,
         area_size=500.0,
-        step_std=20.0,
-        seed=args.seed
+        step_std=25.0,
+        seed=42
     )
     
-    # traj_h_base = init_predefined_height_trajectory(
-    #     N=args.total_UE,
-    #     T=args.round,
-    #     h_min=h_min,
-    #     h_max=h_max,
-    #     seed=args.seed if hasattr(args, 'seed') else 0
-    # )
-    h_const = 0.3 * (args.h_min + args.h_max)   # mid-altitude baseline
+    traj_h_base = init_predefined_height_trajectory(
+        N=args.total_UE,
+        T=args.round,
+        h_min=h_min,
+        h_max=h_max,
+        seed=args.seed if hasattr(args, 'seed') else 0
+    )
+    # h_const = 0.3 * (args.h_min + args.h_max)   # mid-altitude baseline
 
-    traj_h_base = np.ones((args.round, args.total_UE), dtype=np.float32) * h_const
+    # traj_h_base = np.ones((args.round, args.total_UE), dtype=np.float32) * h_const
     
     
     # Channel parameters (highrise urban example)

@@ -8,7 +8,7 @@ def args_parser():
     parser.add_argument('--active_UE', type=int, default=10)
     parser.add_argument('--local_ep', type=int, default=2)
     parser.add_argument('--local_bs', type=int, default=32)
-    parser.add_argument('--bs', type=int, default=128)
+    parser.add_argument('--bs', type=int, default=64)
     parser.add_argument('--lr', type=float, default=0.01)
     parser.add_argument('--momentum', type=float, default=0.0)
 
@@ -24,7 +24,7 @@ def args_parser():
 
 
     # Experiment switches
-    parser.add_argument('--method', type=str, default='marl',
+    parser.add_argument('--method', type=str, default='greedy_channel',
                         choices=['random', 'greedy_channel', 'marl'],
                         help='Client selection method')
     
@@ -53,15 +53,15 @@ def args_parser():
 
 
         # --- Altitude bounds (for MARL / scenario) ---
-    parser.add_argument('--h_min', type=float, default=80.0)
+    parser.add_argument('--h_min', type=float, default=100.0)
     parser.add_argument('--h_max', type=float, default=500.0)
     parser.add_argument('--delta_h_max', type=float, default=20.0)
 
     # --- MARL training switches ---
     parser.add_argument('--train_marl', action='store_true', default=False)
-    parser.add_argument('--marl_episodes', type=int, default=5000)
+    parser.add_argument('--marl_episodes', type=int, default=10000)
     parser.add_argument('--episode_len', type=int, default=100)  # wireless-only episode length
-    parser.add_argument('--seed', type=int, default=20)
+    parser.add_argument('--seed', type=int, default=20) #20
 
     # --- PPO / MAPPO hyperparams ---
     parser.add_argument('--gamma', type=float, default=0.99)
@@ -76,7 +76,7 @@ def args_parser():
     parser.add_argument('--minibatch_size', type=int, default=256)
 
     # --- Reward smoothing (helps PPO) ---
-    parser.add_argument('--snr_kappa', type=float, default=0.1)  # smooth success prob
+    parser.add_argument('--snr_kappa', type=float, default=2)  # smooth success prob
 
     parser.add_argument('--marl_policy_path', type=str, default='marl_policy.pt')
     args = parser.parse_args()

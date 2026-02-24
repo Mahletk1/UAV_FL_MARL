@@ -57,88 +57,82 @@ class UAVScoreEnv:
         scores: shape [N], in [0,1]
         returns: obs_n_next, state_next, reward, done, info
         """
+        # ---- weights (make sure these exist somewhere consistent) ----
+        # Best: set these in __init__ as self.w_rel, self.w_fair, self.w_eng
+    
         # 1) altitude update (hard constraints)
         delta_h = np.clip(delta_h, -self.dh_max, self.dh_max).astype(np.float32)
         self.h = np.clip(self.h + delta_h, self.h_min, self.h_max).astype(np.float32)
-
+    
         # 2) compute A2G metrics at current t
         t_idx = min(self.t, self.traj_x.shape[0] - 1)
         x_uav = self.traj_x[t_idx]
         y_uav = self.traj_y[t_idx]
-
+    
         a = self.env_params["a"]
         b = self.env_params["b"]
         eta1_db = self.env_params["eta1_db"]
         eta2_db = self.env_params["eta2_db"]
-
+    
         theta, d = elevation_angle(self.x_bs, self.y_bs, self.h_bs, x_uav, y_uav, self.h)
         P_LoS = plos(theta, a, b)
         PL_db = avg_pathloss_db(d, P_LoS, self.fc, eta1_db, eta2_db)
         snr_db = snr_from_pathloss_db(self.P_tx_dbm, PL_db, self.noise_dbm)
-
-        # Smooth success probability (better learning signal than hard threshold)
-        # q = _sigmoid((snr_db - self.args.snr_th) / self.args.snr_kappa).astype(np.float32)
+    
+        # Soft success probability (smooth learning signal)
+        # Make sure args.snr_kappa exists (e.g., default 2.0)
+        # q = 1.0 / (1.0 + np.exp(-(snr_db - self.args.snr_th) / (self.args.snr_kappa + 1e-8))).astype(np.float32)
         q = (snr_db >= self.args.snr_th).astype(np.float32)
-       
-        # score-weighted reliability over ALL UAVs
-        eps = 1e-8
-       
-        
-        
-                # 3) BS selects Top-K by score
+        # Hard success (only for analysis/logging)
+        q_hard = (snr_db >= self.args.snr_th).astype(np.float32)
+    
+        # 3) BS selects Top-K by score
         idx = np.argsort(scores)[-self.K:]
         selected = np.zeros(self.N, dtype=np.float32)
         selected[idx] = 1.0
-        
-        # compute smallest half threshold once per episode
+    
+        # 4) fairness/bias helper masks
         threshold = np.percentile(self.data_ratio, 50)  # median
-        
         small_mask = (self.data_ratio <= threshold).astype(np.float32)
-        
-        # 4) reward components
-        R_rel = float(np.mean(q[idx]))
-        R_fair = float(np.mean(1.0 - self.last_selected[idx]))
-        R_small = float(np.mean(small_mask[idx]))
-        # P_dh = float(np.mean((delta_h / (self.dh_max + 1e-8)) ** 2))
-        R_score_rel = float(np.sum(scores * q) / (np.sum(scores) + eps))
-        # --- movement penalty: penalize upward movement for NON-selected UAVs ---
-        up = np.clip(delta_h, 0.0, None)  # positive part only
-        non_selected = 1.0 - selected     # 1 if not selected
-        
-        P_up_non = float(np.mean((non_selected * (up / (self.dh_max + 1e-8))) ** 2))
-        # penalize assigning high score to bad link
-        P_mismatch = float(np.sum(scores * (1.0 - q)) / (np.sum(scores) + eps))
-          
-        
+    
+        # ---- reward components (3-term macro reward) ----
+        # Reliability
+        R_rel = float(np.mean(q[idx]))                           # selected should succeed
+        R_align = float(np.mean(scores * (2.0 * q - 1.0)))       # scores align with channel quality
+    
+        # Fairness / bias control
+        R_fair = float(np.mean(1.0 - self.last_selected[idx]))   # don't pick same ones repeatedly
+        R_small = float(np.mean(small_mask[idx]))                # include under-represented (small) clients
+        R_fair_macro = R_fair #+ R_small
+    
+        # Energy / altitude constraint
+        h_norm = (self.h - self.h_min) / (self.h_max - self.h_min + 1e-8)
+        up = np.clip(delta_h, 0.0, None)
+        P_eng = float(np.mean(0.2 * (h_norm ** 2) + 0.1 * (up / (self.dh_max + 1e-8)) ** 2))
+    
+        # Final reward
         reward = (
-            7.0 * R_rel
-          + 1.3 * R_fair
-          + 0.7 * R_small
-          + 1.5 * R_score_rel
-          - 1.5 * P_mismatch
-          - 1 * P_up_non
+            6 * (R_rel + 1.5 * R_align)
+            + 1.2 * R_fair_macro
+            - 1 * P_eng
         )
-        # reward = (
-        #     6.0 * R_rel
-        #   + 1.0 * R_fair
-        #   + 0.7 * R_small
-        #   + 1.5 * R_score_rel
-        #   - 1.5 * P_mismatch
-        #   - 0.8 * P_up_non
-        # )
-        # print("fairness", R_fair)
-        # reward = 2 * R_rel + 1.5 * R_fair + 1 * R_small - 0.5 * P_dh
-
+    
         # 5) update history + time
         self.last_selected = selected
         self.t += 1
         done = (self.t >= self.T)
-        
+    
         obs_n, state = self._build_obs_state()
+    
         info = {
-            "R_rel": R_rel, "R_fair": R_fair, "R_small": R_small, "P_up_non": P_up_non,
+            "R_rel": R_rel,
+            "R_align": R_align,
+            "R_fair": R_fair,
+            "R_small": R_small,
+            "P_eng": P_eng,
             "mean_snr_db": float(np.mean(snr_db)),
-            "mean_h": float(np.mean(self.h))
+            "mean_q_hard_selected": float(np.mean(q_hard[idx])),
+            "mean_h": float(np.mean(self.h)),
         }
         return obs_n, state, reward, done, info
 

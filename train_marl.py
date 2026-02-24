@@ -76,8 +76,8 @@ def main():
          N=args.total_UE,
          T=args.episode_len,   # <-- FIX
          area_size=500.0,
-         step_std=20.0,
-         seed=args.seed
+         step_std=25.0,
+         seed=2
     )
     env = UAVScoreEnv(args, traj_x, traj_y, ENV_PARAMS[args.env])
 
@@ -121,7 +121,7 @@ def main():
         rel_hist.append(info["R_rel"])
         fair_hist.append(info["R_fair"])
         small_hist.append(info["R_small"])
-        pdh_hist.append(info["P_up_non"])
+        pdh_hist.append(info["P_eng"])
 
         if (ep + 1) % 10 == 0:
             print(f"[EP {ep+1:04d}] reward={ep_reward/env.T:.3f} "
@@ -152,7 +152,7 @@ def main():
     plt.plot(rel_hist, label="R_rel")
     plt.plot(fair_hist, label="R_fair")
     plt.plot(small_hist, label="R_small")
-    plt.plot(pdh_hist, label="P_up_non")
+    plt.plot(pdh_hist, label="P_eng")
     plt.xlabel("Episode")
     plt.ylabel("Metric")
     plt.grid(True)

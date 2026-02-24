@@ -49,16 +49,13 @@ def plot_loss(logs, labels):
     
 def plot_selection_counts_per_client_grouped(logs, labels,
                                              save_path="selection_counts_grouped.png",
-                                             normalize=False):
+                                             normalize=True):
     """
     Grouped bar chart: for each client index, show selection count for each method.
 
     normalize=False -> raw counts (# rounds selected)
     normalize=True  -> average selection rate (count / T)
     """
-    import numpy as np
-    import matplotlib.pyplot as plt
-
     # collect counts per method
     counts_list = []
     T_list = []
@@ -131,7 +128,7 @@ def plot_3d_uav_scatter_at_round(log, title="UAV 3D positions", r=0, save_path=N
 
     # Optional: keep equal-ish XY scaling for nicer geometry feel
     ax.set_box_aspect((1, 1, 0.6))
-    ax.view_init(elev=15, azim=-120)
+    ax.view_init(elev=10, azim=-120)
     
     plt.tight_layout()
     if save_path:
@@ -166,7 +163,7 @@ def plot_3d_uav_trajectories(log, uav_ids=None, title="UAV 3D trajectories", sav
     ax.legend(loc="best")
 
     ax.set_box_aspect((1, 1, 0.6))
-    ax.view_init(elev=15, azim=-120)
+    ax.view_init(elev=10, azim=-120)
     
     plt.tight_layout()
     if save_path:
@@ -211,7 +208,7 @@ def plot_3d_scatter_selected_success(log, title="UAV 3D (selection & success)", 
     ax.legend(loc="best")
 
     ax.set_box_aspect((1, 1, 0.6))
-    ax.view_init(elev=15, azim=-120)
+    ax.view_init(elev=10, azim=-120)
 
     plt.tight_layout()
     if save_path:
@@ -235,37 +232,44 @@ def main():
 
     logs = [load_log(p) for p in paths]
 
-    # plot_accuracy(logs, labels)
-    # plot_loss(logs, labels)
+    plot_accuracy(logs, labels)
+    plot_loss(logs, labels)
     
-    # plot_selection_counts_per_client_grouped(
-    #     logs, labels,
-    #     save_path=os.path.join(RESULTS, "selection_counts_grouped.png"),
-    #     normalize=False   # raw counts
-    # )
+    plot_selection_counts_per_client_grouped(
+        logs, labels,
+        save_path=os.path.join(RESULTS, "selection_counts_grouped.png"),
+        normalize=False   # raw counts
+    )
 
-    # # Optional: also save normalized rate version
-    # plot_selection_counts_per_client_grouped(
-    #     logs, labels,
-    #     save_path=os.path.join(RESULTS, "selection_rate_grouped.png"),
-    #     normalize=True
-    # )
+    # Optional: also save normalized rate version
+    plot_selection_counts_per_client_grouped(
+        logs, labels,
+        save_path=os.path.join(RESULTS, "selection_rate_grouped.png"),
+        normalize=True
+    )
     
-    # # ---- 3D visualizations for MARL (MAPPO) ----
+    # ---- 3D visualizations for MARL (MAPPO) ----
     # r = 30  # pick any round to visualize (e.g., early/mid/late: 0, 30, 80)
     
     # plot_3d_uav_scatter_at_round(
     #     logs[1], title=labels[1], r=r,
     #     save_path=os.path.join(RESULTS, f"3d_scatter_{labels[2].replace(' ', '_')}_r{r}.png")
     # )
-    
-    # plot_3d_scatter_selected_success(
-    #     logs[1], title=labels[1], r=65,
-    #     save_path=os.path.join(RESULTS, "3d_selected_success_marl_r30.png")
-    # )
+    plot_3d_scatter_selected_success(
+        logs[2], title=labels[2], r=20,
+        save_path=os.path.join(RESULTS, "3d_selected_success_marl_r30.png")
+    )
+    plot_3d_scatter_selected_success(
+        logs[1], title=labels[1], r=20,
+        save_path=os.path.join(RESULTS, "3d_selected_success_marl_r30.png")
+    )
+    plot_3d_scatter_selected_success(
+        logs[0], title=labels[0], r=20,
+        save_path=os.path.join(RESULTS, "3d_selected_success_marl_r30.png")
+    )
     
     plot_3d_uav_trajectories(
-        logs[2], uav_ids=[1, 3, 4],
+        logs[2], uav_ids=[0, 8, 16],
         title=f"{labels[2]} — trajectories",
         save_path=os.path.join(RESULTS, f"3d_traj_{labels[2].replace(' ', '_')}.png")
     )

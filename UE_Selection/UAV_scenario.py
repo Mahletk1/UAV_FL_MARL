@@ -14,7 +14,7 @@ def init_random_xy_trajectory(N, T, area_size=500.0, seed=0):
 
 def init_random_walk_xy_trajectory(N, T, area_size=500.0, step_std=10.0, seed=0):
     rng = np.random.default_rng(seed)
-
+    print(seed)
     traj_x = np.zeros((T, N))
     traj_y = np.zeros((T, N))
 
