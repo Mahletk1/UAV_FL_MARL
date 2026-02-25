@@ -58,8 +58,9 @@ def init_predefined_height_trajectory(N, T, h_min, h_max, seed=0):
 
     return traj_h
 
-def init_altitudes(N, h_min, h_max):
-    return np.random.uniform(h_min, h_max, N)
+def init_altitudes(N, h_min, h_max, seed=None):
+    rng = np.random.default_rng(seed)
+    return rng.uniform(h_min, h_max, N)
 
 def update_altitudes(h, actions, h_min, h_max):
     h_new = h + actions

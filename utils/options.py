@@ -24,35 +24,30 @@ def args_parser():
 
 
     # Experiment switches
-    parser.add_argument('--method', type=str, default='greedy_channel',
-                        choices=['random', 'greedy_channel', 'marl'],
-                        help='Client selection method')
     
-    # parser.add_argument('--altitude_mode', type=str, default='fixed',
-    #                     choices=['fixed', 'random', 'marl'],
-    #                     help='How UAV altitudes are set')
+    #change this for method
+    parser.add_argument('--seed', type=int, default=2) #1
+    parser.add_argument('--method', type=str, default='marl',choices=['random', 'greedy_channel', 'marl'],help='Client selection method')
+    parser.add_argument('--marl_mode', type=str, default='altitude_only',choices=['full', 'selection_only', 'altitude_only'])
+    parser.add_argument('--alt_only_selector', type=str, default='random', choices=['greedy_channel', 'random'])
     
-    parser.add_argument('--wireless_on', action='store_true', default=True,
-                    help='Enable wireless success/failure model')
+    
+    #don't change
+    parser.add_argument('--env', type=str, default='highrise',choices=['suburban', 'urban','denseurban', 'highrise'],help='Propagation environment type')   
+    parser.add_argument('--wireless_on', action='store_true', default=True,help='Enable wireless success/failure model')
+    parser.add_argument('--snr_th', type=float, default=20.0, help='SNR threshold for successful upload')
+    
+    #Ablation
 
-    
-    parser.add_argument('--snr_th', type=float, default=20.0,
-                    help='SNR threshold for successful upload')
- # Dataset and models
-    parser.add_argument('--dataset', type=str, default='mnist',
-                     choices=['mnist', 'cifar10'],
-                     help='Dataset to use')
-    parser.add_argument('--model', type=str, default='cnn60k',
-                    choices=['cnn', 'resnet', 'cnn60k'],
-                    help='Model architecture')
+ 
+    # Dataset and models
+    parser.add_argument('--dataset', type=str, default='mnist',choices=['mnist', 'cifar10'], help='Dataset to use')
+    parser.add_argument('--model', type=str, default='cnn60k', choices=['cnn', 'resnet', 'cnn60k'], help='Model architecture')
  # Different Environments 
  
-    parser.add_argument('--env', type=str, default='highrise',
-                    choices=['suburban', 'urban','denseurban', 'highrise'],
-                    help='Propagation environment type')
+   
 
-
-        # --- Altitude bounds (for MARL / scenario) ---
+ # --- Altitude bounds (for MARL / scenario) ---
     parser.add_argument('--h_min', type=float, default=100.0)
     parser.add_argument('--h_max', type=float, default=500.0)
     parser.add_argument('--delta_h_max', type=float, default=20.0)
@@ -61,7 +56,7 @@ def args_parser():
     parser.add_argument('--train_marl', action='store_true', default=False)
     parser.add_argument('--marl_episodes', type=int, default=10000)
     parser.add_argument('--episode_len', type=int, default=100)  # wireless-only episode length
-    parser.add_argument('--seed', type=int, default=20) #20
+
 
     # --- PPO / MAPPO hyperparams ---
     parser.add_argument('--gamma', type=float, default=0.99)

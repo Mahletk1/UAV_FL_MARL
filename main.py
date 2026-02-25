@@ -119,6 +119,8 @@ def main():
         'avg_pl_selected': [],
         'num_selected': [],
         'num_success': [],
+        'success_rate': [],
+        'avg_pl_successful': [],
     
         # fairness masks
         'selected_mask': [],
@@ -129,47 +131,24 @@ def main():
         'y_uav': [],
         'h_uav': []
     }
-# ---- Initialize scenario (outside the FL loop) ----
-    x_bs, y_bs, h_bs = 0.0, 0.0, 20.0          # BS location
-    h_min, h_max = args.h_min, args.h_max              # UAV altitude bounds
-   
-
-# ---- Predefined UAV trajectories (x, y, z) ----
-#     traj_x, traj_y = init_circular_xy_trajectory(
-#         N=args.total_UE,
-#         T=args.round,
-#         R_mean=200.0,
-#         R_jitter=60.0,
-#         seed=args.seed
-# )
-
-
-    # traj_x, traj_y = init_random_xy_trajectory(
-    #     N=args.total_UE,
-    #     T=args.round,
-    #     area_size=500.0,
-    #     seed=args.seed
-    # )
+# ---- Initialize scenario ----
+   # ---- Initialize scenario (outside the FL loop) ----
+    x_bs, y_bs, h_bs = 0.0, 0.0, 20.0
+    h_min, h_max = args.h_min, args.h_max
     
     traj_x, traj_y = init_random_walk_xy_trajectory(
         N=args.total_UE,
         T=args.round,
         area_size=500.0,
         step_std=25.0,
-        seed=42
+        seed=args.seed
     )
     
-    traj_h_base = init_predefined_height_trajectory(
-        N=args.total_UE,
-        T=args.round,
-        h_min=h_min,
-        h_max=h_max,
-        seed=args.seed if hasattr(args, 'seed') else 0
-    )
-    # h_const = 0.3 * (args.h_min + args.h_max)   # mid-altitude baseline
-
-    # traj_h_base = np.ones((args.round, args.total_UE), dtype=np.float32) * h_const
+    # ---- Initial altitudes: shared across methods (fair comparison) ----
+    h_init = init_altitudes(args.total_UE, h_min, h_max, seed=args.seed).astype(np.float32)
     
+    # Baselines: fixed heterogeneous altitudes
+    h_fixed = h_init.copy()
     
     # Channel parameters (highrise urban example)
     env_cfg = ENV_PARAMS[args.env]
@@ -180,7 +159,7 @@ def main():
 
     
     fc = 2e9                  # 2 GHz
-    # alpha = 2.0               # pathloss exponent
+    # alpha = 2.0               # pathloss exponentcu
     # Transmit power and noise (dBm)
     P_tx_dbm = 30.0      # 100 mW UAV uplink
     noise_dbm = -97  # thermal noise + NF
@@ -197,8 +176,8 @@ def main():
         marl_agent = MAPPOAgent(args, obs_dim=obs_dim, state_dim=state_dim, device=args.device)
         marl_agent.load(args.marl_policy_path)
     
-        # stateful altitude
-        h = init_altitudes(args.total_UE, h_min, h_max).astype(np.float32)
+        # MARL: stateful altitude (start from same initial heights)
+        h = h_init.copy()
         last_selected = np.zeros(args.total_UE, dtype=np.float32)
     else:
         raise ValueError("Unknown selection method")
@@ -214,7 +193,7 @@ def main():
         if args.method == "marl":
             h_uav = h
         else:
-            h_uav = traj_h_base[r]
+            h_uav = h_fixed
         
         # ---------- A2G compute (using current altitude) ----------
         theta, d = elevation_angle(x_bs, y_bs, h_bs, x_uav, y_uav, h_uav)
@@ -236,24 +215,36 @@ def main():
             ).astype(np.float32)
             state = obs_n.reshape(-1).astype(np.float32)
         
-            # Policy inference
+           # Policy inference (always get dh and scores)
             dh, scores, _ = marl_agent.act_deterministic(obs_n, state)
-        
-            # Apply altitude update
-            dh = np.clip(dh, -args.delta_h_max, args.delta_h_max).astype(np.float32)
-            h = np.clip(h + dh, h_min, h_max).astype(np.float32)
-        
-            # Recompute channel after altitude update (important!)
+            
+            # ----- altitude update depending on mode -----
+            if args.marl_mode in ["full", "altitude_only"]:
+                dh = np.clip(dh, -args.delta_h_max, args.delta_h_max).astype(np.float32)
+                h = np.clip(h + dh, h_min, h_max).astype(np.float32)
+            else:
+                # selection_only: freeze altitude
+                pass
+            
+            # Recompute channel after (possible) altitude update
             h_uav = h
             theta, d = elevation_angle(x_bs, y_bs, h_bs, x_uav, y_uav, h_uav)
             P_LoS = plos(theta, a, b)
             PL_db = avg_pathloss_db(d, P_LoS, fc, eta1_db, eta2_db)
             snr_db = snr_from_pathloss_db(P_tx_dbm, PL_db, noise_dbm)
-        
-            # Select Top-K by score
-            idxs_users = np.argsort(scores)[-args.active_UE:]
-        
-            # Update last_selected
+            
+            # ----- selection depending on mode -----
+            if args.marl_mode in ["full", "selection_only"]:
+                # Use MARL scores for Top-K
+                idxs_users = np.argsort(scores)[-args.active_UE:]
+            else:
+                # altitude_only: do NOT use scores
+                if args.alt_only_selector == "greedy_channel":
+                    idxs_users = np.argsort(snr_db)[-args.active_UE:]
+                else:
+                    idxs_users = np.random.choice(args.total_UE, size=args.active_UE, replace=False)
+            
+            # Update last_selected (keep this for full/selection_only; optional for altitude_only)
             last_selected[:] = 0.0
             last_selected[idxs_users] = 1.0
         
@@ -267,19 +258,19 @@ def main():
         else:
             p_succ = np.ones_like(snr_db)
          # ---- DEBUG (put it HERE) ----
-        print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
-        print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
-        print("-" * 95)
+        # print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
+        # print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
+        # print("-" * 95)
          
-        for i in range(args.total_UE):
-             print(f"{i:3d} | "
-                       f"{x_uav[i]:8.2f} | "
-                       f"{y_uav[i]:8.2f} | "
-                       f"{h_uav[i]:10.2f} | "
-                       f"{theta[i]:15.2f} | "
-                       f"{P_LoS[i]:7.3f} | "
-                       f"{PL_db[i]:12.2f} | "
-                       f"{snr_db[i]:9.2f}")
+        # for i in range(args.total_UE):
+        #      print(f"{i:3d} | "
+        #                f"{x_uav[i]:8.2f} | "
+        #                f"{y_uav[i]:8.2f} | "
+        #                f"{h_uav[i]:10.2f} | "
+        #                f"{theta[i]:15.2f} | "
+        #                f"{P_LoS[i]:7.3f} | "
+        #                f"{PL_db[i]:12.2f} | "
+        #                f"{snr_db[i]:9.2f}")
        
          # This is to plot the positions of the UAVs
         # plot_uav_xy(x_uav, y_uav, x_bs, y_bs, round_id=r)
@@ -320,6 +311,8 @@ def main():
         log['avg_pl_selected'].append(np.mean(PL_db[idxs_users]))
         log['num_selected'].append(len(idxs_users))
         log['num_success'].append(len(successful_users))
+        log['success_rate'].append(len(successful_users) / float(args.active_UE))
+        log['avg_pl_successful'].append(np.mean(PL_db[successful_users]) if len(successful_users)>0 else np.nan)
 
         print(f"Round {r:02d} | Method: {args.method} | Success: {len(successful_users)}/{args.active_UE} | "
               f"Test Acc: {acc:.2f}% | Test Loss: {loss:.4f}")
@@ -331,7 +324,12 @@ def main():
     
     data_mode = args.iid   # 'iid' or 'dirichlet'
     env_tag = args.env
-    save_name = f"results/{args.method}_{data_mode}_{env_tag}_wireless{args.wireless_on}.npy"
+    
+    method_tag = args.method
+    if args.method == "marl":
+        method_tag = f"marl_{args.marl_mode}"
+    
+    save_name = f"results/{method_tag}_{data_mode}_{env_tag}_wireless{args.wireless_on}_seed{args.seed}.npy"
     
     # ---- NEW: convert list->array so plots are easy ----
     log['x_uav'] = np.stack(log['x_uav'], axis=0)             # [T, N]
