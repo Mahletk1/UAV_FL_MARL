@@ -73,7 +73,7 @@ def args_parser():
     # --- Reward smoothing (helps PPO) ---
     parser.add_argument('--snr_kappa', type=float, default=2)  # smooth success prob
 
-    parser.add_argument('--marl_policy_path', type=str, default='marl_policy.pt')
+    parser.add_argument('--marl_policy_path', type=str, default='actor.pt')
     args = parser.parse_args()
     return args
 

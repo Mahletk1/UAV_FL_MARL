@@ -1,9 +1,20 @@
-from utils.options import args_parser
-from utils.sampling_func import DataPartitioner
+import os, sys
+
+this_dir = os.path.dirname(os.path.abspath(__file__))      # .../SimCode
+lm_root  = os.path.join(this_dir, "light_mappo")           # .../SimCode/light_mappo
+sys.path.insert(0, lm_root)
+sys.path.insert(0, this_dir)
+
+# Spyder sometimes keeps a broken 'algorithms' cached:
+if "algorithms" in sys.modules:
+    del sys.modules["algorithms"]
+
+from utils1.options import args_parser
+from utils1.sampling_func import DataPartitioner
 from models.Update import LocalUpdate
 from models.Fed import FedAvg
-from models.Nets import CNNMnist,CNN60K
 from models.evaluation import test_model
+from models.Nets import CNNMnist,CNN60K
 from UE_Selection.selectors import RandomSelector, GreedyChannelSelector, MARLSelector
 
 import copy
@@ -17,7 +28,21 @@ from models.Nets import ResNetCifar
 import os
 import matplotlib.pyplot as plt
 import random
-from mappo_agent import MAPPOAgent
+
+
+from algorithms.algorithm.r_actor_critic import R_Actor
+from gymnasium import spaces
+
+
+def load_light_mappo_actor(args, obs_dim, act_dim, device, ckpt_path):
+    # Dummy spaces just to build the same network structure
+    obs_space = spaces.Box(low=-1.0, high=1.0, shape=(obs_dim,), dtype=np.float32)
+    act_space = spaces.Box(low=-1.0, high=1.0, shape=(act_dim,), dtype=np.float32)
+
+    actor = R_Actor(args, obs_space, act_space, device=device)
+    actor.load_state_dict(torch.load(ckpt_path, map_location=device))
+    actor.eval()
+    return actor
 
 def plot_uav_xy(x_uav, y_uav, x_bs=0.0, y_bs=0.0, round_id=None):
     plt.figure(figsize=(6,6))
@@ -62,9 +87,23 @@ ENV_PARAMS = {
     }
 }
  
+def merge_missing_light_mappo_args(args):
+    # Pull default MAPPO args from light_mappo, then fill any missing fields in your args
+    from light_mappo.config import get_config
+
+    lm_parser = get_config()
+    lm_args = lm_parser.parse_args([])  # defaults only (no CLI)
+
+    for k, v in vars(lm_args).items():
+        if not hasattr(args, k):
+            setattr(args, k, v)
+
+    return args
+
+
 def main():
     args = args_parser()
-   
+    args = merge_missing_light_mappo_args(args)
     np.random.seed(args.seed)
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -172,13 +211,26 @@ def main():
         selector = GreedyChannelSelector()
     elif args.method == 'marl':
         obs_dim = 6
-        state_dim = args.total_UE * obs_dim
-        marl_agent = MAPPOAgent(args, obs_dim=obs_dim, state_dim=state_dim, device=args.device)
-        marl_agent.load(args.marl_policy_path)
+        act_dim = 2  # (delta_h, score)
+    
+        actor = load_light_mappo_actor(
+            args,
+            obs_dim=obs_dim,
+            act_dim=act_dim,
+            device=args.device,
+            ckpt_path=args.marl_policy_path  # should point to actor.pt
+        )
     
         # MARL: stateful altitude (start from same initial heights)
         h = h_init.copy()
         last_selected = np.zeros(args.total_UE, dtype=np.float32)
+    
+        # RNN hidden state (keep across rounds if recurrent policy was used)
+        rnn_states = torch.zeros(
+            (args.total_UE, args.recurrent_N, args.hidden_size),
+            device=args.device
+        )
+        masks = torch.ones((args.total_UE, 1), device=args.device)
     else:
         raise ValueError("Unknown selection method")
        
@@ -216,7 +268,14 @@ def main():
             state = obs_n.reshape(-1).astype(np.float32)
         
            # Policy inference (always get dh and scores)
-            dh, scores, _ = marl_agent.act_deterministic(obs_n, state)
+            obs_t = torch.tensor(obs_n, dtype=torch.float32, device=args.device)
+
+            with torch.no_grad():
+                actions, _, rnn_states = actor(obs_t, rnn_states, masks, deterministic=True)
+            
+            actions = actions.cpu().numpy()
+            dh = actions[:, 0]
+            scores = actions[:, 1]
             
             # ----- altitude update depending on mode -----
             if args.marl_mode in ["full", "altitude_only"]:
@@ -258,19 +317,19 @@ def main():
         else:
             p_succ = np.ones_like(snr_db)
          # ---- DEBUG (put it HERE) ----
-        # print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
-        # print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
-        # print("-" * 95)
+        print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
+        print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
+        print("-" * 95)
          
-        # for i in range(args.total_UE):
-        #      print(f"{i:3d} | "
-        #                f"{x_uav[i]:8.2f} | "
-        #                f"{y_uav[i]:8.2f} | "
-        #                f"{h_uav[i]:10.2f} | "
-        #                f"{theta[i]:15.2f} | "
-        #                f"{P_LoS[i]:7.3f} | "
-        #                f"{PL_db[i]:12.2f} | "
-        #                f"{snr_db[i]:9.2f}")
+        for i in range(args.total_UE):
+             print(f"{i:3d} | "
+                       f"{x_uav[i]:8.2f} | "
+                       f"{y_uav[i]:8.2f} | "
+                       f"{h_uav[i]:10.2f} | "
+                       f"{theta[i]:15.2f} | "
+                       f"{P_LoS[i]:7.3f} | "
+                       f"{PL_db[i]:12.2f} | "
+                       f"{snr_db[i]:9.2f}")
        
          # This is to plot the positions of the UAVs
         # plot_uav_xy(x_uav, y_uav, x_bs, y_bs, round_id=r)
