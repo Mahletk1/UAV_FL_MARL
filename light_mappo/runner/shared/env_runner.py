@@ -105,7 +105,7 @@ class EnvRunner(Runner):
                 infos_last = infos[-1]  # infos from last env step
                 train_infos["mean_altitude"] = np.mean([i["mean_h"] for i in infos_last])
                 train_infos["mean_selected_snr"] = np.mean([i["mean_snr_db"] for i in infos_last])
-                train_infos["unique_selected_ratio"] = np.mean([i["mean_q_hard_selected"] for i in infos_last])
+                # train_infos["unique_selected_ratio"] = np.mean([i["mean_q_hard_selected"] for i in infos_last])
                 train_infos["mean_abs_dh"] = np.mean(np.abs(self.buffer.actions[..., 0]))
                 
                 self.log_train(train_infos, total_num_steps)

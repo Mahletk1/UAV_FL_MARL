@@ -15,7 +15,7 @@ from models.Update import LocalUpdate
 from models.Fed import FedAvg
 from models.evaluation import test_model
 from models.Nets import CNNMnist,CNN60K
-from UE_Selection.selectors import RandomSelector, GreedyChannelSelector, MARLSelector
+from UE_Selection.selectors import RandomSelector, GreedyChannelSelector
 
 import copy
 import torch
@@ -23,7 +23,7 @@ import numpy as np
 from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 from UE_Selection.UAV_scenario import init_circular_xy_trajectory,init_random_xy_trajectory,init_predefined_height_trajectory,init_random_walk_xy_trajectory,  init_altitudes #update_altitudes
-from UE_Selection.atg_channel import elevation_angle, plos, snr_from_pathloss_db, avg_pathloss_db
+from UE_Selection.atg_channel import elevation_angle, plos, avg_pathloss_db, snr_from_pathloss_db, snr_rayleigh_from_pathloss_db
 from models.Nets import ResNetCifar
 import os
 import matplotlib.pyplot as plt
@@ -104,6 +104,13 @@ def merge_missing_light_mappo_args(args):
 def main():
     args = args_parser()
     args = merge_missing_light_mappo_args(args)
+    # MAPPO in light_mappo is feed-forward by default (non-recurrent)
+    args.use_recurrent_policy = False
+    args.use_naive_recurrent_policy = False
+
+    # Keep inference action scaling consistent with EnvCore (dh_max=20)
+    args.delta_h_max = 20.0
+    
     np.random.seed(args.seed)
     random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -133,7 +140,10 @@ def main():
 
 
 
-    partition_obj = DataPartitioner(dataset_train, args.total_UE, NonIID=args.iid, alpha=args.alpha)
+    # partition_obj = DataPartitioner(dataset_train, args.total_UE, NonIID=args.iid, alpha=args.alpha)
+    partition_obj = DataPartitioner(dataset_train, args.total_UE,
+                            seed=args.seed,
+                            NonIID=args.iid, alpha=args.alpha)
     dict_users, _ = partition_obj.use() #Each client gets indices of MNIST samples.
     
     sizes = np.array([len(dict_users[i]) for i in range(args.total_UE)], dtype=np.float32)
@@ -172,14 +182,14 @@ def main():
     }
 # ---- Initialize scenario ----
    # ---- Initialize scenario (outside the FL loop) ----
-    x_bs, y_bs, h_bs = 0.0, 0.0, 20.0
+    x_bs, y_bs, h_bs = 0.0, 0.0, 25.0
     h_min, h_max = args.h_min, args.h_max
     
     traj_x, traj_y = init_random_walk_xy_trajectory(
         N=args.total_UE,
         T=args.round,
-        area_size=500.0,
-        step_std=25.0,
+        radius=600.0,
+        step_std=40.0,
         seed=args.seed
     )
     
@@ -197,11 +207,11 @@ def main():
     print(f"[Environment] {args.env} | a={a}, b={b}, eta_LoS={eta1_db}, eta_NLoS={eta2_db}")
 
     
-    fc = 2e9                  # 2 GHz
+    fc = 3.5e9                  # 3.5 GHz
     # alpha = 2.0               # pathloss exponentcu
     # Transmit power and noise (dBm)
-    P_tx_dbm = 30.0      # 100 mW UAV uplink
-    noise_dbm = -97  # thermal noise + NF
+    P_tx_dbm = 23.0      # 100 mW UAV uplink
+    noise_dbm = -105  # thermal noise + NF
     
     
     # ---------------- Selector ----------------
@@ -257,7 +267,8 @@ def main():
         if args.method == "marl":
             # Build obs from current round channel stats
             h_norm = (h_uav - h_min) / (h_max - h_min + 1e-8)
-            d_norm = d / (np.max(d) + 1e-8)
+            d_max = np.sqrt((600.0**2 + 600.0**2) + (h_max - h_bs)**2)
+            d_norm = d / (d_max + 1e-8)
             theta_norm = theta / 90.0
             snr_norm = np.clip((snr_db + 20.0) / 60.0, 0.0, 1.0)
         
@@ -274,12 +285,34 @@ def main():
                 actions, _, rnn_states = actor(obs_t, rnn_states, masks, deterministic=True)
             
             actions = actions.cpu().numpy()
-            dh = actions[:, 0]
-            scores = actions[:, 1]
+            a0 = actions[:, 0]
+            a1 = actions[:, 1]
+           
+            # --- RAW policy outputs (before any decoding) ---
+          # print every 10 rounds to avoid spam
+            print(f"[Round {r:02d}] RAW a0 (dh head)  min/mean/max: {a0.min():.3f}/{a0.mean():.3f}/{a0.max():.3f}")
+            print(f"[Round {r:02d}] RAW a1 (score head) min/mean/max: {a1.min():.3f}/{a1.mean():.3f}/{a1.max():.3f}")
             
-            # ----- altitude update depending on mode -----
+            # --- how much would be clipped if you clip to [-1,1] ---
+            clip_frac_a0 = float(np.mean(np.abs(a0) > 1.0))
+            clip_frac_a1 = float(np.mean(np.abs(a1) > 1.0))
+        
+            print(f"[Round {r:02d}] clip_frac a0={clip_frac_a0:.2f} | a1={clip_frac_a1:.2f}")
+                       
+            # EXACT same decoding as training EnvCore
+            dh = np.clip(a0, -1.0, 1.0) * args.delta_h_max           # meters
+            # scores = (np.clip(a1, -1.0, 1.0) + 1.0) * 0.5            # [0,1]
+            scores = 1.0 / (1.0 + np.exp(-a1))   # sigmoid -> (0,1)
+            
+            scores_clip = (np.clip(a1, -1.0, 1.0) + 1.0) * 0.5
+            scores_sig  = 1.0 / (1.0 + np.exp(-a1))
+            
+            
+            print(f"[Round {r:02d}] scores_clip min/mean/max: {scores_clip.min():.3f}/{scores_clip.mean():.3f}/{scores_clip.max():.3f}")
+            print(f"[Round {r:02d}] scores_sig  min/mean/max: {scores_sig.min():.3f}/{scores_sig.mean():.3f}/{scores_sig.max():.3f}")
+                
+            # altitude update
             if args.marl_mode in ["full", "altitude_only"]:
-                dh = np.clip(dh, -args.delta_h_max, args.delta_h_max).astype(np.float32)
                 h = np.clip(h + dh, h_min, h_max).astype(np.float32)
             else:
                 # selection_only: freeze altitude
@@ -317,19 +350,19 @@ def main():
         else:
             p_succ = np.ones_like(snr_db)
          # ---- DEBUG (put it HERE) ----
-        print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
-        print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
-        print("-" * 95)
+        # print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
+        # print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
+        # print("-" * 95)
          
-        for i in range(args.total_UE):
-             print(f"{i:3d} | "
-                       f"{x_uav[i]:8.2f} | "
-                       f"{y_uav[i]:8.2f} | "
-                       f"{h_uav[i]:10.2f} | "
-                       f"{theta[i]:15.2f} | "
-                       f"{P_LoS[i]:7.3f} | "
-                       f"{PL_db[i]:12.2f} | "
-                       f"{snr_db[i]:9.2f}")
+        # for i in range(args.total_UE):
+        #      print(f"{i:3d} | "
+        #                f"{x_uav[i]:8.2f} | "
+        #                f"{y_uav[i]:8.2f} | "
+        #                f"{h_uav[i]:10.2f} | "
+        #                f"{theta[i]:15.2f} | "
+        #                f"{P_LoS[i]:7.3f} | "
+        #                f"{PL_db[i]:12.2f} | "
+        #                f"{snr_db[i]:9.2f}")
        
          # This is to plot the positions of the UAVs
         # plot_uav_xy(x_uav, y_uav, x_bs, y_bs, round_id=r)

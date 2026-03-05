@@ -26,7 +26,6 @@ import numpy as np
 from pathlib import Path
 import torch
 import json
-import matplotlib.pyplot as plt
 
 # Get the parent directory of the current file
 parent_dir = os.path.abspath(os.path.join(os.getcwd(), "."))
@@ -192,7 +191,7 @@ def main(args):
 
     runner.writter.export_scalars_to_json(str(runner.log_dir + "/summary.json"))
     runner.writter.close()
-    
+
 
 
 if __name__ == "__main__":

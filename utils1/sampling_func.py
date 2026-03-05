@@ -43,34 +43,36 @@ class DataPartitioner(object):
         return partitions, net_cls_counts
 
     def __getDirichletData__(self, data, num_clients, seed, alpha):
-        np.random.seed(seed)
+
+        rng = np.random.RandomState(seed)
+    
         K = len(np.unique(data.targets))
         labels = np.array(data.targets)
         N = len(labels)
-
+    
         idx_batch = [[] for _ in range(num_clients)]
-
+    
         for k in range(K):
             idx_k = np.where(labels == k)[0]
-            np.random.shuffle(idx_k)
-
-            proportions = np.random.dirichlet(np.repeat(alpha, num_clients))
+            rng.shuffle(idx_k)
+    
+            proportions = rng.dirichlet(np.repeat(alpha, num_clients))
             proportions = proportions / proportions.sum()
             proportions = (np.cumsum(proportions) * len(idx_k)).astype(int)[:-1]
-
+    
             splits = np.split(idx_k, proportions)
+    
             for i in range(num_clients):
                 idx_batch[i].extend(splits[i].tolist())
-
-        # shuffle client data
+    
         for i in range(num_clients):
-            np.random.shuffle(idx_batch[i])
-
-        # class distribution (optional)
+            rng.shuffle(idx_batch[i])
+    
         net_cls_counts = {}
+    
         for j in range(num_clients):
             idxs = idx_batch[j]
             unq, unq_cnt = np.unique(labels[idxs], return_counts=True)
             net_cls_counts[j] = {unq[i]: unq_cnt[i] for i in range(len(unq))}
-
+    
         return idx_batch, net_cls_counts

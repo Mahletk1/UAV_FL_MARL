@@ -32,12 +32,11 @@ class ContinuousActionEnv(object):
         for agent in range(self.num_agent):
             # physical action space
             u_action_space = spaces.Box(
-                low=-np.inf,
-                high=+np.inf,
+                low=-1.0,
+                high=1.0,
                 shape=(self.signal_action_dim,),
                 dtype=np.float32,
             )
-
             if self.movable:
                 total_action_space.append(u_action_space)
 
@@ -47,20 +46,13 @@ class ContinuousActionEnv(object):
             # observation space
             share_obs_dim += self.signal_obs_dim
             self.observation_space.append(
-                spaces.Box(
-                    low=-np.inf,
-                    high=+np.inf,
-                    shape=(self.signal_obs_dim,),
-                    dtype=np.float32,
-                )
+                spaces.Box(low=0.0, high=1.0, shape=(self.signal_obs_dim,), dtype=np.float32)
             )  # [-inf,inf]
-
-        self.share_observation_space = [
-            spaces.Box(
-                low=-np.inf, high=+np.inf, shape=(share_obs_dim,), dtype=np.float32
-            )
-            for _ in range(self.num_agent)
-        ]
+    
+            self.share_observation_space = [
+                spaces.Box(low=0.0, high=1.0, shape=(share_obs_dim,), dtype=np.float32)
+                for _ in range(self.num_agent)
+            ]
 
     def step(self, actions):
         """
