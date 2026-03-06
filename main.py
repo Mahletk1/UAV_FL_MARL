@@ -288,29 +288,16 @@ def main():
             a0 = actions[:, 0]
             a1 = actions[:, 1]
            
-            # --- RAW policy outputs (before any decoding) ---
-          # print every 10 rounds to avoid spam
-            print(f"[Round {r:02d}] RAW a0 (dh head)  min/mean/max: {a0.min():.3f}/{a0.mean():.3f}/{a0.max():.3f}")
-            print(f"[Round {r:02d}] RAW a1 (score head) min/mean/max: {a1.min():.3f}/{a1.mean():.3f}/{a1.max():.3f}")
-            
-            # --- how much would be clipped if you clip to [-1,1] ---
-            clip_frac_a0 = float(np.mean(np.abs(a0) > 1.0))
-            clip_frac_a1 = float(np.mean(np.abs(a1) > 1.0))
-        
-            print(f"[Round {r:02d}] clip_frac a0={clip_frac_a0:.2f} | a1={clip_frac_a1:.2f}")
-                       
+          
             # EXACT same decoding as training EnvCore
             dh = np.clip(a0, -1.0, 1.0) * args.delta_h_max           # meters
-            # scores = (np.clip(a1, -1.0, 1.0) + 1.0) * 0.5            # [0,1]
-            scores = 1.0 / (1.0 + np.exp(-a1))   # sigmoid -> (0,1)
-            
-            scores_clip = (np.clip(a1, -1.0, 1.0) + 1.0) * 0.5
-            scores_sig  = 1.0 / (1.0 + np.exp(-a1))
-            
-            
-            print(f"[Round {r:02d}] scores_clip min/mean/max: {scores_clip.min():.3f}/{scores_clip.mean():.3f}/{scores_clip.max():.3f}")
-            print(f"[Round {r:02d}] scores_sig  min/mean/max: {scores_sig.min():.3f}/{scores_sig.mean():.3f}/{scores_sig.max():.3f}")
-                
+            scores = 0.5 * (np.tanh(a1) + 1.0)
+            # print("scores", scores)
+            # top = np.argsort(scores)[-args.active_UE:]
+            # clip_frac_a0 = float(np.mean(np.abs(a0) > 1.0))
+            # print(f"[Round {r:02d}] a0 raw min/mean/max {a0.min():.2f}/{a0.mean():.2f}/{a0.max():.2f} | clip_frac={clip_frac_a0:.2f}")
+            # print(f"[Round {r:02d}] score(tanh) min/mean/max {scores.min():.3f}/{scores.mean():.3f}/{scores.max():.3f} | TopK scores {np.round(scores[top],3)}")
+           
             # altitude update
             if args.marl_mode in ["full", "altitude_only"]:
                 h = np.clip(h + dh, h_min, h_max).astype(np.float32)
@@ -329,6 +316,7 @@ def main():
             if args.marl_mode in ["full", "selection_only"]:
                 # Use MARL scores for Top-K
                 idxs_users = np.argsort(scores)[-args.active_UE:]
+                # print("selected users", idxs_users)
             else:
                 # altitude_only: do NOT use scores
                 if args.alt_only_selector == "greedy_channel":
@@ -350,19 +338,19 @@ def main():
         else:
             p_succ = np.ones_like(snr_db)
          # ---- DEBUG (put it HERE) ----
-        # print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
-        # print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
-        # print("-" * 95)
+        print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
+        print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
+        print("-" * 95)
          
-        # for i in range(args.total_UE):
-        #      print(f"{i:3d} | "
-        #                f"{x_uav[i]:8.2f} | "
-        #                f"{y_uav[i]:8.2f} | "
-        #                f"{h_uav[i]:10.2f} | "
-        #                f"{theta[i]:15.2f} | "
-        #                f"{P_LoS[i]:7.3f} | "
-        #                f"{PL_db[i]:12.2f} | "
-        #                f"{snr_db[i]:9.2f}")
+        for i in range(args.total_UE):
+             print(f"{i:3d} | "
+                       f"{x_uav[i]:8.2f} | "
+                       f"{y_uav[i]:8.2f} | "
+                       f"{h_uav[i]:10.2f} | "
+                       f"{theta[i]:15.2f} | "
+                       f"{P_LoS[i]:7.3f} | "
+                       f"{PL_db[i]:12.2f} | "
+                       f"{snr_db[i]:9.2f}")
        
          # This is to plot the positions of the UAVs
         # plot_uav_xy(x_uav, y_uav, x_bs, y_bs, round_id=r)

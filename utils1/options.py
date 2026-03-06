@@ -26,7 +26,7 @@ def args_parser():
     # Experiment switches
     
     #change this for method
-    parser.add_argument('--seed', type=int, default=5) #1
+    parser.add_argument('--seed', type=int, default=2) #1
     parser.add_argument('--method', type=str, default='marl',choices=['random', 'greedy_channel', 'marl'],help='Client selection method')
     parser.add_argument('--marl_mode', type=str, default='altitude_only',choices=['full', 'selection_only', 'altitude_only'])
     parser.add_argument('--alt_only_selector', type=str, default='greedy_channel', choices=['greedy_channel', 'random'])
@@ -50,7 +50,7 @@ def args_parser():
  # --- Altitude bounds (for MARL / scenario) ---
     parser.add_argument('--h_min', type=float, default=100.0)
     parser.add_argument('--h_max', type=float, default=500.0)
-    parser.add_argument('--delta_h_max', type=float, default=20.0)
+    parser.add_argument('--delta_h_max', type=float, default=10.0)
 
     # --- MARL training switches ---
     parser.add_argument('--train_marl', action='store_true', default=False)

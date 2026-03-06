@@ -29,7 +29,7 @@ def plot_key_from_summary(summary_path, key_substring, out_png):
 
 
 if __name__ == "__main__":
-    run_dir = Path(r"C:\Users\USER\Desktop\conference\SimCode\light_mappo\results\MyEnv\MyEnv\mappo\check\run46\logs")
+    run_dir = Path(r"C:\Users\USER\Desktop\conference\SimCode\light_mappo\results\MyEnv\MyEnv\mappo\check\run51\logs")
     summary_path = run_dir / "summary.json"
 
     # plot_key_from_summary(summary_path, "average_episode_rewards", run_dir / "avg_reward.png")

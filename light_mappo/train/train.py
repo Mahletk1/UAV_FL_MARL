@@ -20,12 +20,11 @@ sys.path.insert(0, project_root)
 # Optional but helpful: ensure relative paths (results/, etc.) are created under light_mappo-main
 os.chdir(light_mappo_root)
 
-import socket
 import setproctitle
 import numpy as np
 from pathlib import Path
 import torch
-import json
+
 
 # Get the parent directory of the current file
 parent_dir = os.path.abspath(os.path.join(os.getcwd(), "."))

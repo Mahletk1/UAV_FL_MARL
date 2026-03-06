@@ -28,7 +28,7 @@ class EnvCore(object):
 
         self.h_min = 100.0
         self.h_max = 500.0
-        self.dh_max = 20.0
+        self.dh_max = 10.0
 
         # Use same meaning as args.snr_th
         self.snr_th = 0
@@ -84,7 +84,9 @@ class EnvCore(object):
         
         self.h = init_altitudes(self.agent_num, self.h_min, self.h_max, seed=ep_seed + 1).astype(np.float32)
         self.last_selected = np.zeros(self.agent_num, dtype=np.float32)
-
+        self.sel_ema = np.zeros(self.agent_num, dtype=np.float32) 
+        self.prev_delta_h = np.zeros(self.agent_num, dtype=np.float32)
+        
         obs_n = self._build_obs()
         return [obs_n[i].astype(np.float32) for i in range(self.agent_num)]
 
@@ -98,7 +100,8 @@ class EnvCore(object):
     
         # ---- map policy outputs -> env variables ----
         delta_h = np.clip(a[:, 0], -1.0, 1.0) * self.dh_max                # meters
-        scores  = (np.clip(a[:, 1], -1.0, 1.0) + 1.0) * 0.5                # [0,1]
+        a1 = a[:, 1]                          # raw score head
+        scores = 0.5 * (np.tanh(a1) + 1.0)                # [0,1]
     
         # ---- altitude update with constraints (C1, C2) ----
         self.h = np.clip(self.h + delta_h, self.h_min, self.h_max).astype(np.float32)
@@ -129,6 +132,11 @@ class EnvCore(object):
         selected = np.zeros(self.agent_num, dtype=np.float32)
         selected[idx] = 1.0
     
+        rho = 0.05
+        p_star = self.K / float(self.agent_num)
+        fair_def = np.clip(p_star - self.sel_ema, 0.0, 1.0).astype(np.float32)
+        self.sel_ema = (1.0 - rho) * self.sel_ema + rho * selected
+
         # ============================================================
         # Reward matches your Problem Formulation:
         #   maximize sum_{selected} utility  - lambda_e * control_cost
@@ -138,9 +146,8 @@ class EnvCore(object):
         # Keep it simple + paper-aligned:
         # reliability is primary; optionally include data_ratio to prefer "useful updates".
         # If you later want fairness, add it in the *utility* (not as a separate extra term).
-        w_rel = 0.8
-        w_data = 0.2
-        u = (w_rel * q_soft + w_data * self.data_ratio).astype(np.float32)  # in [0,1] approx
+        w_rel, w_data, w_fair = 0.6, 0.3, 0.2
+        u = (w_rel*q_soft + w_data*self.data_ratio + w_fair*fair_def).astype(np.float32)  # in [0,1] approx
     
         # ---- Score calibration (so "score" really represents utility) ----
         # This is critical: without this, the agent can output arbitrary scores and still win Top-K.
@@ -156,18 +163,14 @@ class EnvCore(object):
         # ---- Control cost (c_j(t)) ----
         h_norm = (self.h - self.h_min) / (self.h_max - self.h_min + 1e-8)  # [0,1]
         up = np.clip(delta_h, 0.0, None)  # only penalize climbing
-    
-        # penalize: (i) being too high, (ii) upward moves
-        c_ctrl = (0.5 * (h_norm ** 2) + 0.5 * (up / (self.dh_max + 1e-8)) ** 2).astype(np.float32)
-    
-        # ---- Weights (paper hyperparameters) ----
-        # Think of lambda_e as your formulation trade-off.
-        lambda_e = 0.2
+        
+        switch_pen = -0.02 * ((delta_h * self.prev_delta_h) < 0).astype(np.float32) 
+        
         w_calib = 2.0
         w_util  = 2.0
         w_hard  = 1.0
     
-        reward_n = (w_calib * r_calib + w_util * r_util + w_hard * r_hard ).astype(np.float32)
+        reward_n = (w_calib * r_calib + w_util * r_util + w_hard * r_hard + switch_pen ).astype(np.float32)
     
         # ---- time update ----
         self.last_selected = selected
@@ -180,15 +183,7 @@ class EnvCore(object):
         rew_list = [[float(reward_n[i])] for i in range(self.agent_num)]
         done_list = [bool(done) for _ in range(self.agent_num)]
     
-        # ---- a few prints (not overwhelming) to catch "everyone same height" collapse ----
-        if (self.t % 20) == 0:
-            h_std = float(np.std(self.h))
-            mean_h = float(np.mean(self.h))
-            mean_up = float(np.mean(up))
-            sel_h_std = float(np.std(self.h[idx]))
-            print(f"[t={self.t:03d}] h_std={h_std:.2f}, mean_h={mean_h:.2f} | sel_h_std={sel_h_std:.2f} | mean_up={mean_up:.2f}")
-            print(f"          sel_idx={idx} | corr(score,u)={float(np.corrcoef(scores, u)[0,1]):.2f} | sel_snr={float(np.mean(snr_avg_db[idx])):.2f} dB")
-    
+   
         info = {
             "mean_snr_db": float(np.mean(snr_avg_db)),
             "mean_h": float(np.mean(self.h)),
@@ -197,6 +192,8 @@ class EnvCore(object):
             "mean_u_sel": float(np.mean(u[idx])),
         }
         info_list = [info for _ in range(self.agent_num)]
+        
+    
     
         return [obs_list, rew_list, done_list, info_list]
     
