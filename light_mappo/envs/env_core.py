@@ -23,12 +23,12 @@ class EnvCore(object):
     def __init__(self):
         # -------- HARD-CODED SETTINGS (adjust as needed) --------
         self.agent_num = 20     # N = total_UE
-        self.K = 5             # active_UE (Top-K)
+        self.K = 10            # active_UE (Top-K)
         self.T = 100            # episode length
 
         self.h_min = 100.0
         self.h_max = 500.0
-        self.dh_max = 10.0
+        self.dh_max = 10
 
         # Use same meaning as args.snr_th
         self.snr_th = 0
@@ -80,7 +80,7 @@ class EnvCore(object):
         # print ("the seed used", ep_seed)
         # regenerate mobility per episode
         self.traj_x, self.traj_y = init_random_walk_xy_trajectory(
-            N=self.agent_num, T=self.T, radius=600.0, step_std=40.0, seed=ep_seed )
+            N=self.agent_num, T=self.T, radius=600.0, step_std=25, seed=ep_seed )
         
         self.h = init_altitudes(self.agent_num, self.h_min, self.h_max, seed=ep_seed + 1).astype(np.float32)
         self.last_selected = np.zeros(self.agent_num, dtype=np.float32)
@@ -93,110 +93,157 @@ class EnvCore(object):
     def step(self, actions):
         """
         actions: list length N, each action is shape (2,)
-          action[i,0] -> delta_h control (normalized in [-1,1])
-          action[i,1] -> score control (normalized in [-1,1])
+          action[i,0] -> delta_h control
+          action[i,1] -> score control
         """
         a = np.asarray(actions, dtype=np.float32)  # [N,2]
     
-        # ---- map policy outputs -> env variables ----
-        delta_h = np.clip(a[:, 0], -1.0, 1.0) * self.dh_max                # meters
-        a1 = a[:, 1]                          # raw score head
-        scores = 0.5 * (np.tanh(a1) + 1.0)                # [0,1]
+        # ------------------------------------------------------------
+        # 1) Decode policy outputs
+        # ------------------------------------------------------------
+        delta_h = np.clip(a[:, 0], -1.0, 1.0) * self.dh_max
+        a1 = a[:, 1]
+        scores = 0.5 * (np.tanh(a1) + 1.0)   # smooth score in [0,1]
     
-        # ---- altitude update with constraints (C1, C2) ----
-        self.h = np.clip(self.h + delta_h, self.h_min, self.h_max).astype(np.float32)
-    
-        # ---- channel metrics at current t ----
+        # ------------------------------------------------------------
+        # 2) Current geometry at time t
+        # ------------------------------------------------------------
         t_idx = min(self.t, self.traj_x.shape[0] - 1)
         x_uav = self.traj_x[t_idx]
         y_uav = self.traj_y[t_idx]
     
-        a_env    = self.env_params["a"]
-        b_env    = self.env_params["b"]
-        eta1_db  = self.env_params["eta1_db"]
-        eta2_db  = self.env_params["eta2_db"]
+        a_env   = self.env_params["a"]
+        b_env   = self.env_params["b"]
+        eta1_db = self.env_params["eta1_db"]
+        eta2_db = self.env_params["eta2_db"]
     
+        # ------------------------------------------------------------
+        # 3) Reliability BEFORE altitude update
+        # ------------------------------------------------------------
+        h_old = self.h.copy()
+    
+        theta_b, d_b = elevation_angle(self.x_bs, self.y_bs, self.h_bs, x_uav, y_uav, h_old)
+        P_LoS_b = plos(theta_b, a_env, b_env)
+        PL_db_b = avg_pathloss_db(d_b, P_LoS_b, self.fc, eta1_db, eta2_db)
+        snr_before_db = snr_from_pathloss_db(self.P_tx_dbm, PL_db_b, self.noise_dbm)
+    
+        q_soft_before = 1.0 / (1.0 + np.exp(-(snr_before_db - self.snr_th) / 2.0))
+    
+        # ------------------------------------------------------------
+        # 4) Apply altitude update
+        # ------------------------------------------------------------
+        self.h = np.clip(self.h + delta_h, self.h_min, self.h_max).astype(np.float32)
+    
+        # ------------------------------------------------------------
+        # 5) Reliability AFTER altitude update
+        # ------------------------------------------------------------
         theta, d = elevation_angle(self.x_bs, self.y_bs, self.h_bs, x_uav, y_uav, self.h)
-        P_LoS    = plos(theta, a_env, b_env)
-        PL_db    = avg_pathloss_db(d, P_LoS, self.fc, eta1_db, eta2_db)
-    
-        # use avg SNR for stability (consistent with your current codebase)
+        P_LoS = plos(theta, a_env, b_env)
+        PL_db = avg_pathloss_db(d, P_LoS, self.fc, eta1_db, eta2_db)
         snr_avg_db = snr_from_pathloss_db(self.P_tx_dbm, PL_db, self.noise_dbm)
     
-        # reliability signals
-        q_hard = (snr_avg_db >= self.snr_th).astype(np.float32)  # {0,1}
-        q_soft = 1.0 / (1.0 + np.exp(-(snr_avg_db - self.snr_th) / 2.0))  # (0,1), smooth
+        q_hard = (snr_avg_db >= self.snr_th).astype(np.float32)
+        q_soft = 1.0 / (1.0 + np.exp(-(snr_avg_db - self.snr_th) / 2.0))
     
-        # ---- Top-K selection by score (C3) ----
+        # ------------------------------------------------------------
+        # 6) Fairness deficit
+        # ------------------------------------------------------------
+        rho = 0.05
+        p_star = self.K / float(self.agent_num)
+        fair_def = np.clip(p_star - self.sel_ema, 0.0, 1.0).astype(np.float32)
+    
+        # ------------------------------------------------------------
+        # 7) Score priority target
+        #    fairness + data, gated by reliability BEFORE altitude move
+        # ------------------------------------------------------------
+        w_data = 0.8
+        w_fair = 2
+        priority = (w_data * self.data_ratio + w_fair * fair_def)
+        priority = priority.astype(np.float32)
+    
+        # ------------------------------------------------------------
+        # 8) Top-K selection by score
+        # ------------------------------------------------------------
         idx = np.argsort(scores)[-self.K:]
         selected = np.zeros(self.agent_num, dtype=np.float32)
         selected[idx] = 1.0
     
-        rho = 0.05
-        p_star = self.K / float(self.agent_num)
-        fair_def = np.clip(p_star - self.sel_ema, 0.0, 1.0).astype(np.float32)
+        # update fairness memory AFTER selection
         self.sel_ema = (1.0 - rho) * self.sel_ema + rho * selected
+    
+        # ------------------------------------------------------------
+        # 9) Reward terms
+        # ------------------------------------------------------------
+    
+        # (a) Score should reflect priority
+        r_calib = - (scores - priority) ** 2
+    
+        # (b) Selected UAVs should be reliable
+        r_rel_soft = selected * q_soft
+        r_rel_hard = selected * (2.0 * q_hard - 1.0)
+    
+        # (c) Altitude action should improve reliability of selected UAVs
+        # r_alt_gain = selected * (q_soft - q_soft_before)
+    
+        d_horizontal = np.sqrt((x_uav - self.x_bs) ** 2 + (y_uav - self.y_bs) ** 2)
+        need = np.clip(d_horizontal / 600.0, 0.0, 1.0)
+        h_target = self.h_min + need * (self.h_max - self.h_min)
+        r_alt_gain = - ((self.h - h_target) / (self.h_max - self.h_min + 1e-8)) ** 2
+        
+        # r_move = -0.02 * (delta_h / (self.dh_max + 1e-8)) ** 2
 
-        # ============================================================
-        # Reward matches your Problem Formulation:
-        #   maximize sum_{selected} utility  - lambda_e * control_cost
-        # ============================================================
+        # optional small penalty for oscillatory huge moves
+        # r_move = -0.02 * (delta_h / (self.dh_max + 1e-8)) ** 2
     
-        # ---- Utility (u_j(t)) ----
-        # Keep it simple + paper-aligned:
-        # reliability is primary; optionally include data_ratio to prefer "useful updates".
-        # If you later want fairness, add it in the *utility* (not as a separate extra term).
-        w_rel, w_data, w_fair = 0.6, 0.3, 0.2
-        u = (w_rel*q_soft + w_data*self.data_ratio + w_fair*fair_def).astype(np.float32)  # in [0,1] approx
+        # ------------------------------------------------------------
+        # 10) Final reward
+        # ------------------------------------------------------------
+        w_calib = 2.5
+        w_rel_s = 1.5
+        w_rel_h = 1
+        w_alt   = 0.6
+        # w_move  = 1.0
     
-        # ---- Score calibration (so "score" really represents utility) ----
-        # This is critical: without this, the agent can output arbitrary scores and still win Top-K.
-        r_calib = - (scores - u) ** 2    # applies to ALL UAVs
+        reward_n = (
+            w_calib * r_calib
+            + w_rel_s * r_rel_soft
+            + w_rel_h * r_rel_hard
+            + w_alt   * r_alt_gain
+            # + w_alt * r_alt_gain
+            # + w_move * r_move
+        ).astype(np.float32)
     
-        # ---- Selected utility term ----
-        r_util = selected * u
-    
-        # ---- Optional hard success shaping for selected ----
-        # helps learning "don't select failing links"
-        r_hard = selected * (2.0 * q_hard - 1.0)  # +1 if success, -1 if fail, 0 if not selected
-    
-        # ---- Control cost (c_j(t)) ----
-        h_norm = (self.h - self.h_min) / (self.h_max - self.h_min + 1e-8)  # [0,1]
-        up = np.clip(delta_h, 0.0, None)  # only penalize climbing
-        
-        switch_pen = -0.02 * ((delta_h * self.prev_delta_h) < 0).astype(np.float32) 
-        
-        w_calib = 2.0
-        w_util  = 2.0
-        w_hard  = 1.0
-    
-        reward_n = (w_calib * r_calib + w_util * r_util + w_hard * r_hard + switch_pen ).astype(np.float32)
-    
-        # ---- time update ----
+        # ------------------------------------------------------------
+        # 11) Update step / done
+        # ------------------------------------------------------------
         self.last_selected = selected
         self.t += 1
         done = (self.t >= self.T)
     
-        # ---- obs ----
+        # ------------------------------------------------------------
+        # 12) Build next obs
+        # ------------------------------------------------------------
         obs_n = self._build_obs()
         obs_list = [obs_n[i].astype(np.float32) for i in range(self.agent_num)]
         rew_list = [[float(reward_n[i])] for i in range(self.agent_num)]
         done_list = [bool(done) for _ in range(self.agent_num)]
     
-   
+        # ------------------------------------------------------------
+        # 13) Light diagnostics
+        # ------------------------------------------------------------
+
+    
         info = {
             "mean_snr_db": float(np.mean(snr_avg_db)),
             "mean_h": float(np.mean(self.h)),
             "sel_success": float(np.mean(q_hard[idx])),
-            "calib_mse": float(np.mean((scores - u) ** 2)),
-            "mean_u_sel": float(np.mean(u[idx])),
+            "calib_mse": float(np.mean((scores - priority) ** 2)),
+            "mean_priority_sel": float(np.mean(priority[idx])),
+            "mean_alt_gain_sel": float(np.mean(r_alt_gain[idx])),
         }
         info_list = [info for _ in range(self.agent_num)]
-        
-    
     
         return [obs_list, rew_list, done_list, info_list]
-    
     
     def _build_obs(self):
         t_idx = min(self.t, self.traj_x.shape[0] - 1)
