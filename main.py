@@ -14,9 +14,13 @@ from utils1.sampling_func import DataPartitioner
 from models.Update import LocalUpdate
 from models.Fed import FedAvg
 from models.evaluation import test_model
-from models.Nets import CNNMnist,CNN60K
-from UE_Selection.selectors import RandomSelector, GreedyChannelSelector
-
+from models.Nets import CNNMnist,CNN60K,NewCNN60K
+from UE_Selection.selectors import (
+    RandomSelector,
+    GreedyChannelSelector,
+    RoundRobinSelector,
+    ProportionalFairSelector,
+)
 import copy
 import torch
 import numpy as np
@@ -125,24 +129,34 @@ def main():
         dataset_test = datasets.MNIST('./data/mnist/', train=False, download=True, transform=trans)
 
 
-    elif args.dataset == 'cifar10':
-        trans = transforms.Compose([
-        transforms.RandomCrop(32, padding=4),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        ])
-        
-        dataset_train = datasets.CIFAR10('./data/cifar10/', train=True, download=True, transform=trans)
-        dataset_test = datasets.CIFAR10('./data/cifar10/', train=False, download=True, transform=trans)
-        
-        args.num_channels = 3
+    elif args.dataset == 'fashion_mnist':
+        trans = transforms.Compose([transforms.ToTensor()])
+    
+        dataset_train = datasets.FashionMNIST('./data/fashion_mnist/', train=True, download=True, transform=trans)
+        dataset_test = datasets.FashionMNIST('./data/fashion_mnist/', train=False, download=True, transform=trans)
+    
+        args.num_channels = 1
         args.num_classes = 10
+    
+    
+    # elif args.dataset == 'cifar10':
+    #     trans = transforms.Compose([
+    #         transforms.RandomCrop(32, padding=4),
+    #         transforms.RandomHorizontalFlip(),
+    #         transforms.ToTensor(),
+    #     ])
+
+    #     dataset_train = datasets.CIFAR10('./data/cifar10/', train=True, download=True, transform=trans)
+    #     dataset_test = datasets.CIFAR10('./data/cifar10/', train=False, download=True, transform=trans)
+    
+    #     args.num_channels = 3
+    #     args.num_classes = 10
 
 
 
     # partition_obj = DataPartitioner(dataset_train, args.total_UE, NonIID=args.iid, alpha=args.alpha)
     partition_obj = DataPartitioner(dataset_train, args.total_UE,
-                            seed=args.seed,
+                            seed= args.seed,
                             NonIID=args.iid, alpha=args.alpha)
     dict_users, _ = partition_obj.use() #Each client gets indices of MNIST samples.
     
@@ -153,6 +167,8 @@ def main():
         net_glob = CNNMnist(args=args).to(args.device)
     elif args.model == 'cnn60k':
         net_glob = CNN60K(args=args).to(args.device)
+    elif args.model == 'NewCNN60K':
+        net_glob = NewCNN60K(args=args).to(args.device)
     elif args.model == 'resnet':
         net_glob = ResNetCifar(num_classes=args.num_classes).to(args.device)
     else:
@@ -189,7 +205,7 @@ def main():
         N=args.total_UE,
         T=args.round,
         radius=600.0,
-        step_std=40.0,
+        step_std=25.0,
         seed=args.seed
     )
     
@@ -197,7 +213,7 @@ def main():
     h_init = init_altitudes(args.total_UE, h_min, h_max, seed=args.seed).astype(np.float32)
     
     # Baselines: fixed heterogeneous altitudes
-    h_fixed = h_init.copy()
+    h_fixed = init_altitudes(args.total_UE, h_min, h_max, seed=3).astype(np.float32)
     
     # Channel parameters (highrise urban example)
     env_cfg = ENV_PARAMS[args.env]
@@ -217,8 +233,18 @@ def main():
     # ---------------- Selector ----------------
     if args.method == 'random':
         selector = RandomSelector()
+
     elif args.method == 'greedy_channel':
         selector = GreedyChannelSelector()
+    
+    elif args.method == 'round_robin':
+        selector = RoundRobinSelector(num_users=args.total_UE)
+    
+    elif args.method == 'pf':
+        selector = ProportionalFairSelector(
+            num_users=args.total_UE,
+            beta=0.05
+        )
     elif args.method == 'marl':
         obs_dim = 6
         act_dim = 2  # (delta_h, score)
@@ -253,7 +279,12 @@ def main():
         
         # ---------- altitude for this round ----------
         if args.method == "marl":
-            h_uav = h
+            if args.marl_mode in ["full", "altitude_only"]:
+                h_uav = h          # learned / adaptive altitude
+            elif args.marl_mode == "selection_only":
+                h_uav = h_fixed    # fixed altitude
+            else:
+                raise ValueError(f"Unknown marl_mode: {args.marl_mode}")
         else:
             h_uav = h_fixed
         
@@ -288,10 +319,13 @@ def main():
             a0 = actions[:, 0]
             a1 = actions[:, 1]
            
-          
+            print("direct outp h", a0)
+            print("direct outp s", a1)
             # EXACT same decoding as training EnvCore
             dh = np.clip(a0, -1.0, 1.0) * args.delta_h_max           # meters
             scores = 0.5 * (np.tanh(a1) + 1.0)
+            print("dh", dh)
+            print("scores", scores)
             # print("scores", scores)
             # top = np.argsort(scores)[-args.active_UE:]
             # clip_frac_a0 = float(np.mean(np.abs(a0) > 1.0))
@@ -329,6 +363,8 @@ def main():
             last_selected[idxs_users] = 1.0
         
         else:
+            if args.method == "pf":
+                selector.update(snr_db)
             # ---------- baselines selection ----------
             idxs_users = selector.select(snr_db, args.active_UE)
         
@@ -338,19 +374,19 @@ def main():
         else:
             p_succ = np.ones_like(snr_db)
          # ---- DEBUG (put it HERE) ----
-        print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
-        print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
-        print("-" * 95)
+        # print(f"\n[Round {r:02d}] Per-UAV Channel Stats:")
+        # print("UAV |   x (m)  |   y (m)  | Height (m) | Elevation (deg) |  P_LoS  |  PL_avg (dB) |  SNR (dB)")
+        # print("-" * 95)
          
-        for i in range(args.total_UE):
-             print(f"{i:3d} | "
-                       f"{x_uav[i]:8.2f} | "
-                       f"{y_uav[i]:8.2f} | "
-                       f"{h_uav[i]:10.2f} | "
-                       f"{theta[i]:15.2f} | "
-                       f"{P_LoS[i]:7.3f} | "
-                       f"{PL_db[i]:12.2f} | "
-                       f"{snr_db[i]:9.2f}")
+        # for i in range(args.total_UE):
+        #      print(f"{i:3d} | "
+        #                f"{x_uav[i]:8.2f} | "
+        #                f"{y_uav[i]:8.2f} | "
+        #                f"{h_uav[i]:10.2f} | "
+        #                f"{theta[i]:15.2f} | "
+        #                f"{P_LoS[i]:7.3f} | "
+        #                f"{PL_db[i]:12.2f} | "
+        #                f"{snr_db[i]:9.2f}")
        
          # This is to plot the positions of the UAVs
         # plot_uav_xy(x_uav, y_uav, x_bs, y_bs, round_id=r)
@@ -399,45 +435,53 @@ def main():
 
     
 
-    # ---------------- Save Logs ----------------
-    os.makedirs("results", exist_ok=True)
-    
-    data_mode = args.iid   # 'iid' or 'dirichlet'
+       # ---------------- Save Logs ----------------
+    data_mode = args.iid
     env_tag = args.env
-    
+    k_tag = args.active_UE
+
     method_tag = args.method
-    if args.method == "marl":
+    if args.method == "greedy_channel":
+        method_tag = "bc"   # rename for plots/paper
+    elif args.method == "random":
+        method_tag = "rs"
+    elif args.method == "round_robin":
+        method_tag = "rr"
+    elif args.method == "pf":
+        method_tag = "pf"
+    elif args.method == "marl":
         method_tag = f"marl_{args.marl_mode}"
-    
-    save_name = f"results/{method_tag}_{data_mode}_{env_tag}_wireless{args.wireless_on}_seed{args.seed}.npy"
-    
-    # ---- NEW: convert list->array so plots are easy ----
+
+    # Choose subfolder by experiment type
+    # default = main comparison
+    exp_tag = getattr(args, "exp_tag", "main")
+    save_dir = os.path.join("results", exp_tag)
+    os.makedirs(save_dir, exist_ok=True)
+
+    # ---- convert list -> array ----
     log['x_uav'] = np.stack(log['x_uav'], axis=0)             # [T, N]
     log['y_uav'] = np.stack(log['y_uav'], axis=0)             # [T, N]
     log['h_uav'] = np.stack(log['h_uav'], axis=0)             # [T, N]
     log['selected_mask'] = np.stack(log['selected_mask'], 0)  # [T, N]
     log['success_mask'] = np.stack(log['success_mask'], 0)    # [T, N]
 
+    # ---- metadata (very useful later) ----
+    log['method'] = method_tag
+    log['env'] = env_tag
+    log['K'] = int(args.active_UE)
+    log['total_UE'] = int(args.total_UE)
+    log['seed'] = int(args.seed)
+    log['wireless_on'] = bool(args.wireless_on)
+    log['data_mode'] = data_mode
+    log['exp_tag'] = exp_tag
+
+    save_name = os.path.join(
+        save_dir,
+        f"{method_tag}_{data_mode}_{env_tag}_K{k_tag}_wireless{args.wireless_on}_seed{args.seed}.npy"
+    )
+
     np.save(save_name, log)
     print(f"[Saved logs to {save_name}]")
-
-
-    # ---------------- Plots ----------------
-    plt.figure()
-    plt.plot(log['round'], log['test_acc'], marker='o')
-    plt.xlabel("FL Round")
-    plt.ylabel("Test Accuracy (%)")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig("accuracy_vs_rounds.png")
-
-    plt.figure()
-    plt.plot(log['round'], log['test_loss'], marker='o')
-    plt.xlabel("FL Round")
-    plt.ylabel("Test Loss")
-    plt.grid(True)
-    plt.tight_layout()
-    plt.savefig("loss_vs_rounds.png")
-
+    
 if __name__ == '__main__':
     main()

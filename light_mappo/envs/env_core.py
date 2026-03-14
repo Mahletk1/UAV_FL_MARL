@@ -27,11 +27,11 @@ class EnvCore(object):
         self.T = 100            # episode length
 
         self.h_min = 100.0
-        self.h_max = 500.0
+        self.h_max = 300.0
         self.dh_max = 10
 
         # Use same meaning as args.snr_th
-        self.snr_th = 0
+        self.snr_th = 3
 
         self.env_params = ENV_PARAMS["highrise"]
 
@@ -76,11 +76,12 @@ class EnvCore(object):
         self.t = 0
         
         ep_seed = ((self.base_seed + self.episode_id) % 10) + 1
+        # ep_seed = self.base_seed + self.episode_id
         self.episode_id += 1
         # print ("the seed used", ep_seed)
         # regenerate mobility per episode
         self.traj_x, self.traj_y = init_random_walk_xy_trajectory(
-            N=self.agent_num, T=self.T, radius=600.0, step_std=25, seed=ep_seed )
+            N=self.agent_num, T=self.T, radius=500.0, step_std=25, seed=ep_seed )
         
         self.h = init_altitudes(self.agent_num, self.h_min, self.h_max, seed=ep_seed + 1).astype(np.float32)
         self.last_selected = np.zeros(self.agent_num, dtype=np.float32)
@@ -118,18 +119,6 @@ class EnvCore(object):
         eta2_db = self.env_params["eta2_db"]
     
         # ------------------------------------------------------------
-        # 3) Reliability BEFORE altitude update
-        # ------------------------------------------------------------
-        h_old = self.h.copy()
-    
-        theta_b, d_b = elevation_angle(self.x_bs, self.y_bs, self.h_bs, x_uav, y_uav, h_old)
-        P_LoS_b = plos(theta_b, a_env, b_env)
-        PL_db_b = avg_pathloss_db(d_b, P_LoS_b, self.fc, eta1_db, eta2_db)
-        snr_before_db = snr_from_pathloss_db(self.P_tx_dbm, PL_db_b, self.noise_dbm)
-    
-        q_soft_before = 1.0 / (1.0 + np.exp(-(snr_before_db - self.snr_th) / 2.0))
-    
-        # ------------------------------------------------------------
         # 4) Apply altitude update
         # ------------------------------------------------------------
         self.h = np.clip(self.h + delta_h, self.h_min, self.h_max).astype(np.float32)
@@ -148,7 +137,7 @@ class EnvCore(object):
         # ------------------------------------------------------------
         # 6) Fairness deficit
         # ------------------------------------------------------------
-        rho = 0.05
+        rho = 0.06
         p_star = self.K / float(self.agent_num)
         fair_def = np.clip(p_star - self.sel_ema, 0.0, 1.0).astype(np.float32)
     
@@ -156,10 +145,11 @@ class EnvCore(object):
         # 7) Score priority target
         #    fairness + data, gated by reliability BEFORE altitude move
         # ------------------------------------------------------------
-        w_data = 0.8
-        w_fair = 2
+        w_data = 0.4
+        w_fair = 0.6
         priority = (w_data * self.data_ratio + w_fair * fair_def)
-        priority = priority.astype(np.float32)
+        priority = np.clip(priority, 0.0, 1.0)
+        
     
         # ------------------------------------------------------------
         # 8) Top-K selection by score
@@ -189,19 +179,14 @@ class EnvCore(object):
         need = np.clip(d_horizontal / 600.0, 0.0, 1.0)
         h_target = self.h_min + need * (self.h_max - self.h_min)
         r_alt_gain = - ((self.h - h_target) / (self.h_max - self.h_min + 1e-8)) ** 2
-        
-        # r_move = -0.02 * (delta_h / (self.dh_max + 1e-8)) ** 2
-
-        # optional small penalty for oscillatory huge moves
-        # r_move = -0.02 * (delta_h / (self.dh_max + 1e-8)) ** 2
-    
+           
         # ------------------------------------------------------------
         # 10) Final reward
         # ------------------------------------------------------------
         w_calib = 2.5
         w_rel_s = 1.5
-        w_rel_h = 1
-        w_alt   = 0.6
+        w_rel_h = 2
+        w_alt   = 0.3
         # w_move  = 1.0
     
         reward_n = (
@@ -209,8 +194,6 @@ class EnvCore(object):
             + w_rel_s * r_rel_soft
             + w_rel_h * r_rel_hard
             + w_alt   * r_alt_gain
-            # + w_alt * r_alt_gain
-            # + w_move * r_move
         ).astype(np.float32)
     
         # ------------------------------------------------------------
@@ -228,10 +211,6 @@ class EnvCore(object):
         rew_list = [[float(reward_n[i])] for i in range(self.agent_num)]
         done_list = [bool(done) for _ in range(self.agent_num)]
     
-        # ------------------------------------------------------------
-        # 13) Light diagnostics
-        # ------------------------------------------------------------
-
     
         info = {
             "mean_snr_db": float(np.mean(snr_avg_db)),
